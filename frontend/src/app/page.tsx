@@ -405,9 +405,14 @@ export default function Home() {
           )}
 
           <button
-            onClick={() => window.location.reload()}
+            onClick={() => {
+              setMessages([]);
+              messagesRef.current = [];
+              setCallDuration(0);
+              answerCall(); 
+            }}
             className="mt-6 mb-8 px-8 py-3 rounded-full bg-green-500 text-white font-semibold hover:bg-green-600 transition duration-200"
-          >
+            >
             New Call
           </button>
         </div>

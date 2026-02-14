@@ -99,9 +99,11 @@ export async function POST(req: NextRequest) {
       headers: {
         Authorization: `Bearer ${openrouterKey}`,
         "Content-Type": "application/json",
+        "HTTP-Referer": "http://localhost:3000", 
+        "X-Title": "PulseCall",
       },
       body: JSON.stringify({
-        model: "anthropic/claude-sonnet-4", // or your preferred model
+        model: "openai/gpt-oss-20b:free", // or your preferred model
         max_tokens: 300,
         messages,
       }),

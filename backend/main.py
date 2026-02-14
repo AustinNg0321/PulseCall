@@ -44,6 +44,29 @@ class Conversation(BaseModel):
     history: list[dict[str, str]]
 
 
+class CreateConversationIn(BaseModel):
+    campaign_id: str
+
+
+class CreateConversationOut(BaseModel):
+    id: str
+    campaign_id: str
+    status: Literal["active", "inactive"]
+    start_time: str
+    end_time: str | None = None
+    started_at: str
+    ended_at: str | None = None
+    history: list[dict[str, str]]
+
+
+class GetResponseIn(BaseModel):
+    message: str = Field(min_length=1)
+
+
+class GetResponseOut(BaseModel):
+    reply: str
+
+
 class EndCallOut(BaseModel):
     call_id: str
     conversation_id: str
@@ -62,7 +85,6 @@ class EndCallOut(BaseModel):
 store: dict[str, dict[str, Any]] = {
     "campaigns": {},
     "conversations": {},
-    "calls": {},
     "escalations": {},
 }
 
@@ -107,7 +129,6 @@ def recommended_action_for_flags(flags: list[str]) -> str:
 def seed_example_data() -> None:
     campaign_id = "cmp_demo_001"
     conversation_id = "conv_demo_001"
-    call_id = "call_demo_001"
     escalation_id = "esc_demo_001"
     created_at = now_iso()
 
@@ -136,25 +157,26 @@ def seed_example_data() -> None:
             "content": "I hear you. I can escalate this to a specialist right now.",
         },
     ]
-    call = {
-        "id": call_id,
+    conversation = {
+        "id": conversation_id,
         "campaign_id": campaign_id,
-        "conversation_id": conversation_id,
-        "status": "ended",
+        "status": "inactive",
+        "start_time": created_at,
+        "end_time": now_iso(),
         "started_at": created_at,
         "ended_at": now_iso(),
-        "transcript": transcript,
+        "history": transcript,
         "summary": "Recipient expressed confusion and asked to cancel. Agent offered specialist escalation.",
         "sentiment_score": 2,
         "detected_flags": ["cancel"],
         "recommended_action": "Escalate to a human operator within 15 minutes.",
         "escalation_id": escalation_id,
     }
-    store["calls"][call_id] = call
+    store["conversations"][conversation_id] = conversation
 
     escalation = {
         "id": escalation_id,
-        "call_id": call_id,
+        "call_id": conversation_id,
         "campaign_id": campaign_id,
         "priority": "high",
         "status": "open",
@@ -204,9 +226,33 @@ def create_campaign(payload: CampaignCreate) -> CampaignOut:
     store["campaigns"][campaign_id] = campaign
     return CampaignOut(**campaign)
 
+
+@app.get("/campaigns")
+def list_campaigns() -> list[dict[str, Any]]:
+    return list(store["campaigns"].values())
+
+
+@app.get("/campaigns/{campaign_id}")
+def get_campaign_detail(campaign_id: str) -> dict[str, Any]:
+    return get_campaign(campaign_id)
+
+
+@app.get("/campaigns/{campaign_id}/conversations")
+def list_campaign_conversations(campaign_id: str) -> list[dict[str, Any]]:
+    get_campaign(campaign_id)
+    return [
+        conversation
+        for conversation in store["conversations"].values()
+        if conversation.get("campaign_id") == campaign_id
+    ]
+
+
 # use Conversation model
-@app.post("/campaigns/conversations/create")
-def create_conversation(campaign_id: str):
+@app.post("/campaigns/conversations/create", response_model=CreateConversationOut)
+def create_conversation(payload: CreateConversationIn) -> CreateConversationOut:
+    campaign_id = payload.campaign_id
+    get_campaign(campaign_id)
+
     conversation_id = str(uuid4())
     started_at = now_iso()
 
@@ -220,21 +266,20 @@ def create_conversation(campaign_id: str):
         "ended_at": None,
         "history": [],
     }
-    return store["conversations"][conversation_id]
+    return CreateConversationOut(**store["conversations"][conversation_id])
 
-@app.post("/campaigns/{campaign_id}/{conversation_id}")
-def get_response(campaign_id: str, conversation_id: str, message: str):
+@app.post("/campaigns/{campaign_id}/{conversation_id}", response_model=GetResponseOut)
+def get_response(campaign_id: str, conversation_id: str, payload: GetResponseIn) -> GetResponseOut:
     conversation = get_conversation(conversation_id)
     if conversation["campaign_id"] != campaign_id:
         raise HTTPException(status_code=400, detail="Conversation does not belong to campaign")
     if conversation["status"] != "active":
         raise HTTPException(status_code=400, detail="Conversation is inactive")
 
-    campaign = store["campaigns"].get(campaign_id)
-    if not campaign:
-        raise HTTPException(status_code=404, detail="Campaign not found")
+    campaign = get_campaign(campaign_id)
 
     history = conversation["history"]
+    message = payload.message.strip()
 
     try:
         history.append({
@@ -257,7 +302,7 @@ def get_response(campaign_id: str, conversation_id: str, message: str):
     })
 
     store["conversations"][conversation_id]["history"] = history
-    return response    
+    return GetResponseOut(reply=response)
 
 """
 class EndCallOut(BaseModel):
@@ -273,7 +318,7 @@ class EndCallOut(BaseModel):
 """
 
 @app.post("/campaigns/{campaign_id}/{conversation_id}/end", response_model=EndCallOut)
-def end_call(campaign_id: str, conversation_id: str) -> EndCallOut:
+def end_conversation(campaign_id: str, conversation_id: str) -> EndCallOut:
     conversation = get_conversation(conversation_id)
     if conversation["campaign_id"] != campaign_id:
         raise HTTPException(status_code=400, detail="Conversation does not belong to campaign")
@@ -295,14 +340,14 @@ def end_call(campaign_id: str, conversation_id: str) -> EndCallOut:
     detected_flags = detect_flags(history, campaign["escalation_keywords"])
     recommended_action = recommended_action_for_flags(detected_flags)
 
-    call_id = f"call_{uuid4().hex[:10]}"
+    call_id = conversation_id
     escalation_id: str | None = None
 
     if detected_flags:
         escalation_id = f"esc_{uuid4().hex[:10]}"
         escalation = {
             "id": escalation_id,
-            "call_id": call_id,
+            "call_id": conversation_id,
             "campaign_id": campaign["id"],
             "priority": "high" if sentiment_score <= 2 else "medium",
             "status": "open",
@@ -313,23 +358,23 @@ def end_call(campaign_id: str, conversation_id: str) -> EndCallOut:
         }
         store["escalations"][escalation_id] = escalation
 
-    call = {
-        "call_id": call_id,
-        "conversation_id": conversation_id,
-        "campaign_id": campaign["id"],
-        "status": "ended",
-        "started_at": conversation["started_at"],
-        "ended_at": conversation["ended_at"],
-        "transcript": history,
-        "summary": summary,
-        "sentiment_score": sentiment_score,
-        "detected_flags": detected_flags,
-        "recommended_action": recommended_action,
-        "escalation_id": escalation_id,
-    }
-    store["calls"][call_id] = call
+    conversation["summary"] = summary
+    conversation["sentiment_score"] = sentiment_score
+    conversation["detected_flags"] = detected_flags
+    conversation["recommended_action"] = recommended_action
+    conversation["escalation_id"] = escalation_id
 
-    return EndCallOut(**call)
+    return EndCallOut(
+        call_id=call_id,
+        conversation_id=conversation_id,
+        campaign_id=campaign["id"],
+        status="ended",
+        summary=summary,
+        sentiment_score=sentiment_score,
+        detected_flags=detected_flags,
+        recommended_action=recommended_action,
+        escalation_id=escalation_id,
+    )
 
 
 @app.get("/conversations")

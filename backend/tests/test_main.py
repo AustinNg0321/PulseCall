@@ -10,10 +10,8 @@ import pytest
 
 @pytest.fixture()
 def app_ctx(monkeypatch: pytest.MonkeyPatch):
-    """Load main.py with a mocked claude module to avoid real API calls."""
+    """Load main.py and patch main.respond to avoid real API calls."""
     calls: list[dict[str, Any]] = []
-
-    fake_claude = types.ModuleType("claude")
 
     def fake_respond(user_message: str, history: list[dict[str, str]], system_prompt: str) -> str:
         calls.append(
@@ -25,13 +23,11 @@ def app_ctx(monkeypatch: pytest.MonkeyPatch):
         )
         return f"mocked-reply:{user_message}"
 
-    fake_claude.respond = fake_respond
-    monkeypatch.setitem(sys.modules, "claude", fake_claude)
-
-    if "main" in sys.modules:
-        del sys.modules["main"]
+    sys.modules.pop("main", None)
+    sys.modules.pop("call_claude", None)
 
     main = importlib.import_module("main")
+    monkeypatch.setattr(main, "respond", fake_respond)
 
     # Reset global in-memory state for test isolation.
     for bucket in main.store.values():
@@ -86,7 +82,7 @@ def test_create_conversation_initializes_required_fields(app_ctx):
         main.app,
         "POST",
         "/campaigns/conversations/create",
-        params={"campaign_id": campaign_id},
+        json={"campaign_id": campaign_id},
     )
 
     assert response.status_code == 200
@@ -113,7 +109,7 @@ def test_get_response_uses_campaign_system_prompt_and_updates_history(app_ctx):
         main.app,
         "POST",
         "/campaigns/conversations/create",
-        params={"campaign_id": campaign_id},
+        json={"campaign_id": campaign_id},
     )
     conversation_id = create_conversation.json()["id"]
 
@@ -121,11 +117,11 @@ def test_get_response_uses_campaign_system_prompt_and_updates_history(app_ctx):
         main.app,
         "POST",
         f"/campaigns/{campaign_id}/{conversation_id}",
-        params={"message": "hello there"},
+        json={"message": "hello there"},
     )
 
     assert response.status_code == 200
-    assert response.json() == "mocked-reply:hello there"
+    assert response.json() == {"reply": "mocked-reply:hello there"}
 
     history = main.store["conversations"][conversation_id]["history"]
     assert len(history) == 2
@@ -136,7 +132,7 @@ def test_get_response_uses_campaign_system_prompt_and_updates_history(app_ctx):
     assert calls[-1]["system_prompt"] == "SYSTEM_PER_CAMPAIGN"
 
 
-def test_end_call_sets_inactive_and_end_time(app_ctx):
+def test_end_conversation_sets_inactive_and_end_time(app_ctx):
     main, _ = app_ctx
 
     create_campaign = request(main.app, "POST", "/campaigns/create", json=make_campaign_payload())
@@ -146,7 +142,7 @@ def test_end_call_sets_inactive_and_end_time(app_ctx):
         main.app,
         "POST",
         "/campaigns/conversations/create",
-        params={"campaign_id": campaign_id},
+        json={"campaign_id": campaign_id},
     )
     conversation_id = create_conversation.json()["id"]
 
@@ -154,7 +150,7 @@ def test_end_call_sets_inactive_and_end_time(app_ctx):
         main.app,
         "POST",
         f"/campaigns/{campaign_id}/{conversation_id}",
-        params={"message": "I might cancel this"},
+        json={"message": "I might cancel this"},
     )
 
     end_response = request(
@@ -185,7 +181,7 @@ def test_get_response_rejects_wrong_campaign_for_conversation(app_ctx):
         main.app,
         "POST",
         "/campaigns/conversations/create",
-        params={"campaign_id": campaign_1},
+        json={"campaign_id": campaign_1},
     )
     conversation_id = create_conversation.json()["id"]
 
@@ -193,7 +189,7 @@ def test_get_response_rejects_wrong_campaign_for_conversation(app_ctx):
         main.app,
         "POST",
         f"/campaigns/{campaign_2}/{conversation_id}",
-        params={"message": "hello"},
+        json={"message": "hello"},
     )
 
     assert response.status_code == 400
@@ -210,12 +206,93 @@ def test_list_conversations_returns_created_conversation(app_ctx):
         main.app,
         "POST",
         "/campaigns/conversations/create",
-        params={"campaign_id": campaign_id},
+        json={"campaign_id": campaign_id},
     )
     conversation_id = create_conversation.json()["id"]
+
+    request(
+        main.app,
+        "POST",
+        f"/campaigns/{campaign_id}/{conversation_id}/end",
+    )
 
     response = request(main.app, "GET", "/conversations")
 
     assert response.status_code == 200
     conversations = response.json()
     assert any(c.get("id") == conversation_id for c in conversations)
+
+
+def test_get_campaigns_returns_list(app_ctx):
+    main, _ = app_ctx
+
+    request(main.app, "POST", "/campaigns/create", json=make_campaign_payload())
+    response = request(main.app, "GET", "/campaigns")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert isinstance(body, list)
+    assert len(body) >= 2  # includes seeded demo campaign
+
+
+def test_get_campaign_by_id_returns_detail(app_ctx):
+    main, _ = app_ctx
+
+    created = request(main.app, "POST", "/campaigns/create", json=make_campaign_payload())
+    campaign_id = created.json()["id"]
+
+    response = request(main.app, "GET", f"/campaigns/{campaign_id}")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["id"] == campaign_id
+    assert "recipients" in body
+
+
+def test_get_campaign_by_id_returns_404_when_missing(app_ctx):
+    main, _ = app_ctx
+
+    response = request(main.app, "GET", "/campaigns/cmp_missing_404")
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Campaign not found"
+
+
+def test_get_campaign_conversations_returns_only_target_campaign(app_ctx):
+    main, _ = app_ctx
+
+    c1 = request(main.app, "POST", "/campaigns/create", json=make_campaign_payload())
+    c2 = request(main.app, "POST", "/campaigns/create", json=make_campaign_payload())
+    campaign_1 = c1.json()["id"]
+    campaign_2 = c2.json()["id"]
+
+    conv1 = request(
+        main.app,
+        "POST",
+        "/campaigns/conversations/create",
+        json={"campaign_id": campaign_1},
+    ).json()["id"]
+    request(
+        main.app,
+        "POST",
+        "/campaigns/conversations/create",
+        json={"campaign_id": campaign_2},
+    )
+
+    response = request(main.app, "GET", f"/campaigns/{campaign_1}/conversations")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert isinstance(body, list)
+    assert len(body) == 1
+    assert body[0]["id"] == conv1
+    assert body[0]["campaign_id"] == campaign_1
+
+
+def test_get_campaign_conversations_returns_404_when_campaign_missing(app_ctx):
+    main, _ = app_ctx
+
+    response = request(main.app, "GET", "/campaigns/cmp_missing_404/conversations")
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Campaign not found"

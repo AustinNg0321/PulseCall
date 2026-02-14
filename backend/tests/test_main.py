@@ -193,7 +193,10 @@ def test_get_response_rejects_wrong_campaign_for_conversation(app_ctx):
     )
 
     assert response.status_code == 400
-    assert response.json()["detail"] == "Conversation does not belong to campaign"
+    body = response.json()
+    assert body["error"]["code"] == "CONVERSATION_CAMPAIGN_MISMATCH"
+    assert body["error"]["message"] == "Conversation does not belong to campaign"
+    assert body["error"]["resource_id"] == conversation_id
 
 
 def test_list_conversations_returns_created_conversation(app_ctx):
@@ -209,6 +212,13 @@ def test_list_conversations_returns_created_conversation(app_ctx):
         json={"campaign_id": campaign_id},
     )
     conversation_id = create_conversation.json()["id"]
+
+    request(
+        main.app,
+        "POST",
+        f"/campaigns/{campaign_id}/{conversation_id}",
+        json={"message": "hello before ending"},
+    )
 
     request(
         main.app,
@@ -255,7 +265,10 @@ def test_get_campaign_by_id_returns_404_when_missing(app_ctx):
     response = request(main.app, "GET", "/campaigns/cmp_missing_404")
 
     assert response.status_code == 404
-    assert response.json()["detail"] == "Campaign not found"
+    body = response.json()
+    assert body["error"]["code"] == "CAMPAIGN_NOT_FOUND"
+    assert body["error"]["message"] == "Campaign not found"
+    assert body["error"]["resource_id"] == "cmp_missing_404"
 
 
 def test_get_campaign_conversations_returns_only_target_campaign(app_ctx):
@@ -295,4 +308,111 @@ def test_get_campaign_conversations_returns_404_when_campaign_missing(app_ctx):
     response = request(main.app, "GET", "/campaigns/cmp_missing_404/conversations")
 
     assert response.status_code == 404
-    assert response.json()["detail"] == "Campaign not found"
+    body = response.json()
+    assert body["error"]["code"] == "CAMPAIGN_NOT_FOUND"
+    assert body["error"]["message"] == "Campaign not found"
+    assert body["error"]["resource_id"] == "cmp_missing_404"
+
+
+def test_get_response_rejects_inactive_conversation_with_409(app_ctx):
+    main, _ = app_ctx
+
+    create_campaign = request(main.app, "POST", "/campaigns/create", json=make_campaign_payload())
+    campaign_id = create_campaign.json()["id"]
+
+    create_conversation = request(
+        main.app,
+        "POST",
+        "/campaigns/conversations/create",
+        json={"campaign_id": campaign_id},
+    )
+    conversation_id = create_conversation.json()["id"]
+
+    request(
+        main.app,
+        "POST",
+        f"/campaigns/{campaign_id}/{conversation_id}",
+        json={"message": "hello"},
+    )
+    request(
+        main.app,
+        "POST",
+        f"/campaigns/{campaign_id}/{conversation_id}/end",
+    )
+
+    response = request(
+        main.app,
+        "POST",
+        f"/campaigns/{campaign_id}/{conversation_id}",
+        json={"message": "second message"},
+    )
+
+    assert response.status_code == 409
+    body = response.json()
+    assert body["error"]["code"] == "CONVERSATION_INACTIVE"
+    assert body["error"]["resource_id"] == conversation_id
+
+
+def test_end_conversation_rejects_inactive_with_409(app_ctx):
+    main, _ = app_ctx
+
+    create_campaign = request(main.app, "POST", "/campaigns/create", json=make_campaign_payload())
+    campaign_id = create_campaign.json()["id"]
+
+    create_conversation = request(
+        main.app,
+        "POST",
+        "/campaigns/conversations/create",
+        json={"campaign_id": campaign_id},
+    )
+    conversation_id = create_conversation.json()["id"]
+
+    request(
+        main.app,
+        "POST",
+        f"/campaigns/{campaign_id}/{conversation_id}",
+        json={"message": "hello"},
+    )
+    request(
+        main.app,
+        "POST",
+        f"/campaigns/{campaign_id}/{conversation_id}/end",
+    )
+
+    response = request(
+        main.app,
+        "POST",
+        f"/campaigns/{campaign_id}/{conversation_id}/end",
+    )
+
+    assert response.status_code == 409
+    body = response.json()
+    assert body["error"]["code"] == "CONVERSATION_INACTIVE"
+    assert body["error"]["message"] == "Cannot end an inactive conversation"
+    assert body["error"]["resource_id"] == conversation_id
+
+
+def test_end_conversation_rejects_empty_history_with_422(app_ctx):
+    main, _ = app_ctx
+
+    create_campaign = request(main.app, "POST", "/campaigns/create", json=make_campaign_payload())
+    campaign_id = create_campaign.json()["id"]
+
+    create_conversation = request(
+        main.app,
+        "POST",
+        "/campaigns/conversations/create",
+        json={"campaign_id": campaign_id},
+    )
+    conversation_id = create_conversation.json()["id"]
+
+    response = request(
+        main.app,
+        "POST",
+        f"/campaigns/{campaign_id}/{conversation_id}/end",
+    )
+
+    assert response.status_code == 422
+    body = response.json()
+    assert body["error"]["code"] == "EMPTY_CONVERSATION_HISTORY"
+    assert body["error"]["resource_id"] == conversation_id

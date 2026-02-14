@@ -4,12 +4,54 @@ from datetime import UTC, datetime
 from typing import Any, Literal
 from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from claude import respond
 
 app = FastAPI(title="PulseCall MVP API", version="0.1.0")
+
+
+class ApiError(Exception):
+    def __init__(
+        self,
+        *,
+        status_code: int,
+        code: str,
+        message: str,
+        resource_id: str | None = None,
+    ) -> None:
+        self.status_code = status_code
+        self.code = code
+        self.message = message
+        self.resource_id = resource_id
+        super().__init__(message)
+
+
+def error_payload(code: str, message: str, resource_id: str | None = None) -> dict[str, Any]:
+    payload: dict[str, Any] = {"code": code, "message": message}
+    if resource_id is not None:
+        payload["resource_id"] = resource_id
+    return {"error": payload}
+
+
+@app.exception_handler(ApiError)
+async def handle_api_error(_: Request, exc: ApiError) -> JSONResponse:
+    return JSONResponse(
+        status_code=exc.status_code,
+        content=error_payload(exc.code, exc.message, exc.resource_id),
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def handle_validation_error(_: Request, exc: RequestValidationError) -> JSONResponse:
+    first = exc.errors()[0] if exc.errors() else {"msg": "Invalid request payload"}
+    return JSONResponse(
+        status_code=422,
+        content=error_payload(code="VALIDATION_ERROR", message=first.get("msg", "Invalid request payload")),
+    )
 
 
 # -----------------------------
@@ -193,13 +235,23 @@ seed_example_data()
 def get_campaign(campaign_id: str):
     campaign = store["campaigns"].get(campaign_id)
     if not campaign:
-        raise HTTPException(status_code=404, detail="Campaign not found")
+        raise ApiError(
+            status_code=404,
+            code="CAMPAIGN_NOT_FOUND",
+            message="Campaign not found",
+            resource_id=campaign_id,
+        )
     return campaign
 
 def get_conversation(conversation_id: str): 
     conversation = store["conversations"].get(conversation_id)
     if not conversation:
-        raise HTTPException(status_code=404, detail="Conversation not found")
+        raise ApiError(
+            status_code=404,
+            code="CONVERSATION_NOT_FOUND",
+            message="Conversation not found",
+            resource_id=conversation_id,
+        )
     return conversation
 
 def get_client_text(history: list[dict[str, str]]) -> str:
@@ -272,14 +324,31 @@ def create_conversation(payload: CreateConversationIn) -> CreateConversationOut:
 def get_response(campaign_id: str, conversation_id: str, payload: GetResponseIn) -> GetResponseOut:
     conversation = get_conversation(conversation_id)
     if conversation["campaign_id"] != campaign_id:
-        raise HTTPException(status_code=400, detail="Conversation does not belong to campaign")
+        raise ApiError(
+            status_code=400,
+            code="CONVERSATION_CAMPAIGN_MISMATCH",
+            message="Conversation does not belong to campaign",
+            resource_id=conversation_id,
+        )
     if conversation["status"] != "active":
-        raise HTTPException(status_code=400, detail="Conversation is inactive")
+        raise ApiError(
+            status_code=409,
+            code="CONVERSATION_INACTIVE",
+            message="Cannot post turn to inactive conversation",
+            resource_id=conversation_id,
+        )
 
     campaign = get_campaign(campaign_id)
 
     history = conversation["history"]
     message = payload.message.strip()
+    if not message:
+        raise ApiError(
+            status_code=422,
+            code="INVALID_MESSAGE",
+            message="Message cannot be blank",
+            resource_id=conversation_id,
+        )
 
     try:
         history.append({
@@ -293,7 +362,12 @@ def get_response(campaign_id: str, conversation_id: str, payload: GetResponseIn)
             system_prompt=campaign["system_prompt"],
         )
     except Exception:
-        raise HTTPException(status_code=500, detail="Claude response generation failed unexpectedly")
+        raise ApiError(
+            status_code=500,
+            code="CLAUDE_RESPONSE_FAILED",
+            message="Claude response generation failed unexpectedly",
+            resource_id=conversation_id,
+        )
     
     # Add Claude response to the history
     history.append({
@@ -321,16 +395,34 @@ class EndCallOut(BaseModel):
 def end_conversation(campaign_id: str, conversation_id: str) -> EndCallOut:
     conversation = get_conversation(conversation_id)
     if conversation["campaign_id"] != campaign_id:
-        raise HTTPException(status_code=400, detail="Conversation does not belong to campaign")
+        raise ApiError(
+            status_code=400,
+            code="CONVERSATION_CAMPAIGN_MISMATCH",
+            message="Conversation does not belong to campaign",
+            resource_id=conversation_id,
+        )
     if conversation["status"] != "active":
-        raise HTTPException(status_code=400, detail="Conversation already ended")
+        raise ApiError(
+            status_code=409,
+            code="CONVERSATION_INACTIVE",
+            message="Cannot end an inactive conversation",
+            resource_id=conversation_id,
+        )
+
+    history = conversation["history"]
+    if not history:
+        raise ApiError(
+            status_code=422,
+            code="EMPTY_CONVERSATION_HISTORY",
+            message="Cannot end conversation with empty history",
+            resource_id=conversation_id,
+        )
 
     ended_at = now_iso()
     conversation["status"] = "inactive"
     conversation["end_time"] = ended_at
     conversation["ended_at"] = ended_at
     campaign = store["campaigns"][conversation["campaign_id"]]
-    history = conversation["history"]
 
     summary = summarize_transcript(history)
     full_text = get_client_text(history)

@@ -7,6 +7,8 @@ from uuid import uuid4
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
+from claude import respond
+
 app = FastAPI(title="PulseCall MVP API", version="0.1.0")
 
 
@@ -25,7 +27,7 @@ class CampaignCreate(BaseModel):
     conversation_goal: str
     system_prompt: str
     escalation_keywords: list[str] = Field(default_factory=list)
-    recipient: Recipient
+    recipients: list[Recipient]
 
 
 class CampaignOut(CampaignCreate):
@@ -33,23 +35,13 @@ class CampaignOut(CampaignCreate):
     created_at: str
 
 
-class SimulateCallOut(BaseModel):
+class Conversation(BaseModel):
     conversation_id: str
     campaign_id: str
-    started_at: str
-    status: Literal["active"]
-
-
-class TurnIn(BaseModel):
-    message: str = Field(min_length=1)
-
-
-class TurnOut(BaseModel):
-    conversation_id: str
-    user_message: str
-    agent_message: str
-    turn_index: int
-    status: Literal["active"]
+    status: Literal["active", "inactive"]
+    start_time: str
+    end_time: str | None = None
+    history: list[dict[str, str]]
 
 
 class EndCallOut(BaseModel):
@@ -78,7 +70,7 @@ store: dict[str, dict[str, Any]] = {
 def now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
-
+# to be implemented
 def sentiment_from_text(text: str) -> int:
     negative_markers = ("angry", "upset", "cancel", "frustrated", "bad", "hate")
     lowered = text.lower()
@@ -88,7 +80,7 @@ def sentiment_from_text(text: str) -> int:
         return 4
     return 3
 
-
+# to be implemented
 def summarize_transcript(transcript: list[dict[str, str]]) -> str:
     if not transcript:
         return "No conversation content captured."
@@ -98,27 +90,18 @@ def summarize_transcript(transcript: list[dict[str, str]]) -> str:
         f"Recipient's main concern: {first_user_msg[:120]}"
     ).strip()
 
-
+# to be implemented
 def detect_flags(transcript: list[dict[str, str]], keywords: list[str]) -> list[str]:
     if not keywords:
         return []
     joined = " ".join(turn["content"] for turn in transcript).lower()
     return [kw for kw in keywords if kw.lower() in joined]
 
-
+# okay
 def recommended_action_for_flags(flags: list[str]) -> str:
     if not flags:
         return "No escalation required. Follow up in normal workflow."
     return "Escalate to a human operator within 15 minutes."
-
-
-def build_agent_reply(campaign: dict[str, Any], user_message: str) -> str:
-    persona = campaign["agent_persona"]
-    goal = campaign["conversation_goal"]
-    return (
-        f"[{persona}] Thanks for sharing. I understand: '{user_message}'. "
-        f"My goal is {goal}. Could you tell me a bit more so I can help?"
-    )
 
 
 def seed_example_data() -> None:
@@ -135,11 +118,13 @@ def seed_example_data() -> None:
         "conversation_goal": "Confirm whether recipient wants help renewing care plan.",
         "system_prompt": "Be concise, empathetic, and clear. Ask one question at a time.",
         "escalation_keywords": ["cancel", "complaint", "lawyer", "fraud"],
-        "recipient": {
-            "name": "Alex Johnson",
-            "phone": "+1-555-0100",
-            "email": "alex@example.com",
-        },
+        "recipients": [
+            {
+                "name": "Alex Johnson",
+                "phone": "+1-555-0100",
+                "email": "alex@example.com",
+            }
+        ],
         "created_at": created_at,
     }
     store["campaigns"][campaign_id] = campaign
@@ -183,16 +168,32 @@ def seed_example_data() -> None:
 
 seed_example_data()
 
+def get_campaign(campaign_id: str):
+    campaign = store["campaigns"].get(campaign_id)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    return campaign
+
+def get_conversation(conversation_id: str): 
+    conversation = store["conversations"].get(conversation_id)
+    if not conversation:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    return conversation
+
+def get_client_text(history: list[dict[str, str]]) -> str:
+    return " ".join(d["content"] for d in history if d["role"] == "user")
 
 # -----------------------------
 # Routes
 # -----------------------------
+
+# okay
 @app.get("/")
 def read_root() -> dict[str, str]:
     return {"service": "PulseCall MVP API", "status": "ok"}
 
-
-@app.post("/campaigns", response_model=CampaignOut)
+# okay
+@app.post("/campaigns/create", response_model=CampaignOut)
 def create_campaign(payload: CampaignCreate) -> CampaignOut:
     campaign_id = f"cmp_{uuid4().hex[:10]}"
     campaign = {
@@ -203,74 +204,95 @@ def create_campaign(payload: CampaignCreate) -> CampaignOut:
     store["campaigns"][campaign_id] = campaign
     return CampaignOut(**campaign)
 
+# use Conversation model
+@app.post("/campaigns/conversations/create")
+def create_conversation(campaign_id: str):
+    conversation_id = str(uuid4())
+    started_at = now_iso()
 
-@app.post("/campaigns/{campaign_id}/simulate", response_model=SimulateCallOut)
-def simulate_call(campaign_id: str) -> SimulateCallOut:
-    campaign = store["campaigns"].get(campaign_id)
-    if campaign is None:
-        raise HTTPException(status_code=404, detail="Campaign not found")
-
-    conversation_id = f"conv_{uuid4().hex[:10]}"
-    conversation = {
+    store["conversations"][conversation_id] = {
         "id": conversation_id,
         "campaign_id": campaign_id,
         "status": "active",
-        "started_at": now_iso(),
+        "start_time": started_at,
+        "end_time": None,
+        "started_at": started_at,
         "ended_at": None,
-        "transcript": [],
+        "history": [],
     }
-    store["conversations"][conversation_id] = conversation
-    return SimulateCallOut(
-        conversation_id=conversation_id,
-        campaign_id=campaign_id,
-        started_at=conversation["started_at"],
-        status="active",
-    )
+    return store["conversations"][conversation_id]
 
+@app.post("/campaigns/{campaign_id}/{conversation_id}")
+def get_response(campaign_id: str, conversation_id: str, message: str):
+    conversation = get_conversation(conversation_id)
+    if conversation["campaign_id"] != campaign_id:
+        raise HTTPException(status_code=400, detail="Conversation does not belong to campaign")
+    if conversation["status"] != "active":
+        raise HTTPException(status_code=400, detail="Conversation is inactive")
 
-@app.post("/conversations/{conversation_id}/turn", response_model=TurnOut)
-def send_turn(conversation_id: str, payload: TurnIn) -> TurnOut:
-    conversation = store["conversations"].get(conversation_id)
-    if conversation is None:
-        raise HTTPException(status_code=404, detail="Conversation not found")
+    campaign = store["campaigns"].get(campaign_id)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    history = conversation["history"]
+
+    try:
+        history.append({
+            "role": "user",
+            "content": message
+        })
+
+        response = respond(
+            user_message=message,
+            history=history,
+            system_prompt=campaign["system_prompt"],
+        )
+    except Exception:
+        raise HTTPException(status_code=500, detail="Claude response generation failed unexpectedly")
+    
+    # Add Claude response to the history
+    history.append({
+        "role": "assistant",
+        "content": response
+    })
+
+    store["conversations"][conversation_id]["history"] = history
+    return response    
+
+"""
+class EndCallOut(BaseModel):
+    call_id: str
+    conversation_id: str
+    campaign_id: str
+    status: Literal["ended"]
+    summary: str
+    sentiment_score: int
+    detected_flags: list[str]
+    recommended_action: str
+    escalation_id: str | None = None
+"""
+
+@app.post("/campaigns/{campaign_id}/{conversation_id}/end", response_model=EndCallOut)
+def end_call(campaign_id: str, conversation_id: str) -> EndCallOut:
+    conversation = get_conversation(conversation_id)
+    if conversation["campaign_id"] != campaign_id:
+        raise HTTPException(status_code=400, detail="Conversation does not belong to campaign")
     if conversation["status"] != "active":
         raise HTTPException(status_code=400, detail="Conversation already ended")
 
+    ended_at = now_iso()
+    conversation["status"] = "inactive"
+    conversation["end_time"] = ended_at
+    conversation["ended_at"] = ended_at
     campaign = store["campaigns"][conversation["campaign_id"]]
-    user_msg = payload.message.strip()
-    agent_msg = build_agent_reply(campaign=campaign, user_message=user_msg)
+    history = conversation["history"]
 
-    conversation["transcript"].append({"role": "user", "content": user_msg})
-    conversation["transcript"].append({"role": "assistant", "content": agent_msg})
-    turn_index = len(conversation["transcript"]) // 2
+    summary = summarize_transcript(history)
+    full_text = get_client_text(history)
 
-    return TurnOut(
-        conversation_id=conversation_id,
-        user_message=user_msg,
-        agent_message=agent_msg,
-        turn_index=turn_index,
-        status="active",
-    )
-
-
-@app.post("/conversations/{conversation_id}/end", response_model=EndCallOut)
-def end_call(conversation_id: str) -> EndCallOut:
-    conversation = store["conversations"].get(conversation_id)
-    if conversation is None:
-        raise HTTPException(status_code=404, detail="Conversation not found")
-    if conversation["status"] != "active":
-        raise HTTPException(status_code=400, detail="Conversation already ended")
-
-    conversation["status"] = "ended"
-    conversation["ended_at"] = now_iso()
-
-    campaign = store["campaigns"][conversation["campaign_id"]]
-    transcript = conversation["transcript"]
-
-    summary = summarize_transcript(transcript)
-    full_text = " ".join(turn["content"] for turn in transcript)
+    # To be implemented later
     sentiment_score = sentiment_from_text(full_text)
-    detected_flags = detect_flags(transcript, campaign["escalation_keywords"])
+    detected_flags = detect_flags(history, campaign["escalation_keywords"])
     recommended_action = recommended_action_for_flags(detected_flags)
 
     call_id = f"call_{uuid4().hex[:10]}"
@@ -292,13 +314,13 @@ def end_call(conversation_id: str) -> EndCallOut:
         store["escalations"][escalation_id] = escalation
 
     call = {
-        "id": call_id,
+        "call_id": call_id,
         "conversation_id": conversation_id,
         "campaign_id": campaign["id"],
         "status": "ended",
         "started_at": conversation["started_at"],
         "ended_at": conversation["ended_at"],
-        "transcript": transcript,
+        "transcript": history,
         "summary": summary,
         "sentiment_score": sentiment_score,
         "detected_flags": detected_flags,
@@ -310,9 +332,9 @@ def end_call(conversation_id: str) -> EndCallOut:
     return EndCallOut(**call)
 
 
-@app.get("/calls")
-def list_calls() -> list[dict[str, Any]]:
-    calls = list(store["calls"].values())
+@app.get("/conversations")
+def list_conversations() -> list[dict[str, Any]]:
+    calls = list(store["conversations"].values())
     calls.sort(key=lambda c: c.get("ended_at", ""), reverse=True)
     return calls
 

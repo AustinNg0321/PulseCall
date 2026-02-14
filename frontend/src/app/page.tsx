@@ -1,8 +1,9 @@
 "use client";
 
 import { useState, useRef, useCallback, useEffect } from "react";
+import { patientProfile } from "./api/chat/patientData";
 
-type CallState = "incoming" | "connected" | "ended";
+type CallState = "home" | "connected" | "ended";
 type Status = "idle" | "recording" | "transcribing" | "thinking" | "speaking";
 
 interface ChatMessage {
@@ -10,21 +11,34 @@ interface ChatMessage {
   content: string;
 }
 
+interface CallSummary {
+  painLevel: number | null;
+  symptoms: string[];
+  ptExercise: boolean | null;
+  medications: string;
+  concerns: string;
+  recommendation: string;
+  followUp: string;
+  summary: string;
+}
+
 const SILENCE_THRESHOLD = 0.01;
 const SILENCE_DURATION = 1000; // ms of silence before auto-stop
 
 export default function Home() {
-  const [callState, setCallState] = useState<CallState>("incoming");
+  const [callState, setCallState] = useState<CallState>("home");
   const [status, setStatus] = useState<Status>("idle");
   const [callDuration, setCallDuration] = useState(0);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [callSummary, setCallSummary] = useState<CallSummary | null>(null);
+  const [summaryLoading, setSummaryLoading] = useState(false);
 
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const callTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const mimeTypeRef = useRef<string>("audio/webm");
   const messagesRef = useRef<ChatMessage[]>([]);
-  const callStateRef = useRef<CallState>("incoming");
+  const callStateRef = useRef<CallState>("home");
   const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const animFrameRef = useRef<number | null>(null);
@@ -196,6 +210,9 @@ export default function Home() {
       if (isEnding) {
         setCallState("ended");
         setStatus("idle");
+        if (messagesRef.current.length > 0) {
+          fetchCallSummary(messagesRef.current);
+        }
       } else if (callStateRef.current === "connected") {
         startRecordingLoop();
       } else {
@@ -293,16 +310,35 @@ export default function Home() {
     }
   }, [playAudioAndContinue, startRecordingLoop]);
 
+  // --- Fetch call summary from LLM ---
+  const fetchCallSummary = useCallback(async (history: ChatMessage[]) => {
+    setSummaryLoading(true);
+    try {
+      const res = await fetch("/api/summary", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ history }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setCallSummary(data);
+      }
+    } catch (err) {
+      console.error("Summary fetch error:", err);
+    } finally {
+      setSummaryLoading(false);
+    }
+  }, []);
+
   // --- End call manually ---
   const endCall = useCallback(() => {
-    
+
     if (audioPlayerRef.current) {
-      audioPlayerRef.current.pause(); // Audio Stop
-      audioPlayerRef.current.currentTime = 0; // Reset to start
-      audioPlayerRef.current = null; // Clear reference
+      audioPlayerRef.current.pause();
+      audioPlayerRef.current.currentTime = 0;
+      audioPlayerRef.current = null;
     }
 
-    // Stop any active recording
     if (mediaRecorderRef.current?.state === "recording") {
       mediaRecorderRef.current.stop();
     }
@@ -316,7 +352,12 @@ export default function Home() {
     }
     setCallState("ended");
     setStatus("idle");
-  }, []);
+
+    // Fetch summary after ending
+    if (messagesRef.current.length > 0) {
+      fetchCallSummary(messagesRef.current);
+    }
+  }, [fetchCallSummary]);
 
   const isProcessing =
     status === "transcribing" || status === "thinking" || status === "speaking";
@@ -329,40 +370,117 @@ export default function Home() {
     speaking: "Speaking...",
   };
 
-  // --- UI: Incoming Call Screen ---
-  if (callState === "incoming") {
+  // --- UI: Home Screen ---
+  if (callState === "home") {
+    const p = patientProfile;
+
     return (
-      <div className="flex min-h-screen flex-col items-center justify-between bg-zinc-950 py-20 text-white bg-[url('https://images.unsplash.com/photo-1576091160399-112ba8d25d1d?auto=format&fit=crop&q=80')] bg-cover bg-center bg-blend-overlay bg-opacity-90">
-        <div className="flex flex-col items-center gap-4 mt-10">
-          <div className="h-32 w-32 rounded-full bg-gray-200 flex items-center justify-center text-zinc-900 text-5xl shadow-2xl border-4 border-white/20">
-            👨‍⚕️
-          </div>
-          <div className="text-center">
-            <h1 className="text-3xl font-bold">PulseCall AI</h1>
-            <p className="text-zinc-300 text-lg animate-pulse mt-2">Incoming Call...</p>
-          </div>
-        </div>
+      <div className="flex min-h-screen flex-col items-center bg-zinc-950 py-8 text-white">
+        <div className="flex flex-col gap-5 max-w-md w-full px-4">
 
-        <div className="w-full max-w-sm flex justify-around px-8 mb-10">
-          <div className="flex flex-col items-center gap-2">
-            <button
-              onClick={() => window.location.reload()}
-              className="h-20 w-20 rounded-full bg-red-500 flex items-center justify-center shadow-lg hover:bg-red-600 transition duration-300"
-            >
-              <svg className="w-8 h-8" fill="currentColor" viewBox="0 0 24 24"><path d="M12 9c-1.6 0-3.15.25-4.6.72v3.1c0 .39-.23.74-.56.9-.98.49-1.87 1.12-2.66 1.85-.18.18-.43.28-.7.28-.28 0-.53-.11-.71-.29L.29 13.08c-.18-.17-.29-.42-.29-.7 0-.28.11-.53.29-.71C3.34 8.36 7.46 6.5 12 6.5s8.66 1.86 11.71 5.17c.18.18.29.43.29.71 0 .28-.11.53-.29.71l-2.48 2.48c-.18.18-.43.29-.71.29-.27 0-.52-.11-.7-.28-.79-.74-1.69-1.36-2.67-1.85-.33-.16-.56-.5-.56-.9v-3.1C15.15 9.25 13.6 9 12 9z"/></svg>
-            </button>
-            <span className="text-sm font-medium">Decline</span>
+          {/* Header */}
+          <div className="flex items-center justify-between mt-4">
+            <div>
+              <h1 className="text-2xl font-bold">PulseCall</h1>
+              <p className="text-zinc-500 text-sm">AI Post-Op Check-in</p>
+            </div>
+            <div className="h-10 w-10 rounded-full bg-zinc-800 border border-zinc-700 flex items-center justify-center text-lg">
+              👨‍⚕️
+            </div>
           </div>
 
-          <div className="flex flex-col items-center gap-2">
-            <button
-              onClick={answerCall}
-              className="h-20 w-20 rounded-full bg-green-500 flex items-center justify-center shadow-lg hover:bg-green-600 transition duration-300 animate-bounce"
-            >
-              <svg className="w-8 h-8" fill="currentColor" viewBox="0 0 24 24"><path d="M20.01 15.38c-1.23 0-2.42-.2-3.53-.56-.35-.12-.74-.03-1.01.24l-1.57 1.97c-2.83-1.44-5.15-3.75-6.59-6.59l1.97-1.57c.26-.27.36-.66.25-1.01-.37-1.11-.56-2.3-.56-3.53 0-.54-.45-.99-.99-.99H4.19C3.65 3.3 3 3.24 3 3.99 3 13.28 10.73 21 20.01 21c.71 0 .72-.63.72-1.19v-3.44c0-.54-.45-.99-.99-.99z"/></svg>
-            </button>
-            <span className="text-sm font-medium">Accept</span>
+          {/* Patient Info Card */}
+          <div className="rounded-2xl bg-zinc-900 border border-zinc-800 p-5 flex flex-col gap-3">
+            <div className="flex items-center gap-4">
+              <div className="h-14 w-14 rounded-full bg-blue-500/10 border border-blue-500/20 flex items-center justify-center text-2xl shrink-0">
+                🧑
+              </div>
+              <div className="flex-1 min-w-0">
+                <h2 className="text-lg font-semibold">{p.name}</h2>
+                <p className="text-zinc-400 text-sm">{p.age}M &middot; {p.id}</p>
+              </div>
+            </div>
+            <div className="flex flex-col gap-1.5 mt-1">
+              <div className="flex items-center gap-2 text-sm">
+                <span className="text-zinc-500">Surgery</span>
+                <span className="text-zinc-300">{p.surgicalHistory[0].procedure}</span>
+              </div>
+              <div className="flex items-center gap-2 text-sm">
+                <span className="text-zinc-500">Date</span>
+                <span className="text-zinc-300">{p.surgicalHistory[0].date}</span>
+              </div>
+              <div className="flex items-center gap-2 text-sm">
+                <span className="text-zinc-500">Doctor</span>
+                <span className="text-zinc-300">{p.surgicalHistory[0].surgeon}</span>
+              </div>
+              <div className="flex items-center gap-2 text-sm">
+                <span className="text-zinc-500">Next Appt</span>
+                <span className="text-zinc-300">{p.nextAppointment}</span>
+              </div>
+            </div>
           </div>
+
+          {/* Quick Stats */}
+          <div className="grid grid-cols-2 gap-3">
+            <div className="rounded-xl bg-zinc-900 border border-zinc-800 p-4 flex flex-col gap-1">
+              <span className="text-xs text-zinc-500 uppercase tracking-wide">Pain Trend</span>
+              <div className="flex items-center gap-1.5 text-xl font-bold">
+                {p.previousCalls.map((c, i) => (
+                  <span key={i} className="flex items-center gap-1.5">
+                    <span className={c.painLevel <= 3 ? "text-green-400" : c.painLevel <= 6 ? "text-yellow-400" : "text-red-400"}>
+                      {c.painLevel}
+                    </span>
+                    {i < p.previousCalls.length - 1 && (
+                      <svg className="w-3 h-3 text-zinc-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                      </svg>
+                    )}
+                  </span>
+                ))}
+                <svg className="w-3 h-3 text-zinc-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                </svg>
+                <span className="text-zinc-600">?</span>
+              </div>
+            </div>
+            <div className="rounded-xl bg-zinc-900 border border-zinc-800 p-4 flex flex-col gap-1">
+              <span className="text-xs text-zinc-500 uppercase tracking-wide">PT Exercise</span>
+              <span className="text-xl font-bold text-green-400">Active</span>
+              <span className="text-xs text-zinc-500">Since Feb 8</span>
+            </div>
+          </div>
+
+          {/* Call History */}
+          <div className="flex flex-col gap-2">
+            <h3 className="text-xs text-zinc-500 uppercase tracking-wider font-semibold px-1">Call History</h3>
+            {[...p.previousCalls].reverse().map((call, i) => (
+              <div key={i} className="rounded-xl bg-zinc-900 border border-zinc-800 p-4 flex items-center gap-3">
+                <div className={`h-10 w-10 rounded-full flex items-center justify-center shrink-0 ${
+                  call.painLevel <= 3 ? "bg-green-500/10 text-green-400" : call.painLevel <= 6 ? "bg-yellow-500/10 text-yellow-400" : "bg-red-500/10 text-red-400"
+                }`}>
+                  <span className="text-sm font-bold">{call.painLevel}</span>
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm font-medium text-zinc-200">{call.date}</span>
+                    <span className="text-xs text-zinc-600">Check-in #{p.previousCalls.length - i}</span>
+                  </div>
+                  <p className="text-xs text-zinc-400 mt-0.5 truncate">{call.summary}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {/* Call Now Button */}
+          <button
+            onClick={answerCall}
+            className="mt-2 mb-8 w-full py-4 rounded-2xl bg-green-500 text-white font-semibold text-lg hover:bg-green-600 transition duration-200 flex items-center justify-center gap-3 shadow-lg shadow-green-500/20"
+          >
+            <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 24 24">
+              <path d="M20.01 15.38c-1.23 0-2.42-.2-3.53-.56-.35-.12-.74-.03-1.01.24l-1.57 1.97c-2.83-1.44-5.15-3.75-6.59-6.59l1.97-1.57c.26-.27.36-.66.25-1.01-.37-1.11-.56-2.3-.56-3.53 0-.54-.45-.99-.99-.99H4.19C3.65 3.3 3 3.24 3 3.99 3 13.28 10.73 21 20.01 21c.71 0 .72-.63.72-1.19v-3.44c0-.54-.45-.99-.99-.99z" />
+            </svg>
+            Start Check-in Call
+          </button>
         </div>
       </div>
     );
@@ -382,10 +500,89 @@ export default function Home() {
             <p className="text-zinc-400 text-lg font-mono">{formatTime(callDuration)}</p>
           </div>
 
-          {/* Conversation Summary */}
-          {messages.length > 0 && (
+          {/* Call Summary Card */}
+          {summaryLoading ? (
+            <div className="w-full rounded-2xl bg-zinc-900 border border-zinc-800 p-6 flex flex-col items-center gap-3">
+              <div className="h-8 w-8 rounded-full border-3 border-zinc-600 border-t-blue-400 animate-spin" />
+              <p className="text-zinc-400 text-sm">Generating call summary...</p>
+            </div>
+          ) : callSummary ? (
+            <div className="w-full rounded-2xl bg-zinc-900 border border-zinc-800 p-5 flex flex-col gap-4">
+              <h2 className="text-sm font-semibold text-zinc-500 uppercase tracking-wider">Call Summary</h2>
+              <p className="text-zinc-200 text-sm leading-relaxed">{callSummary.summary}</p>
+
+              <div className="grid grid-cols-2 gap-3">
+                {/* Pain Level */}
+                <div className="rounded-xl bg-zinc-800/60 p-3 flex flex-col gap-1">
+                  <span className="text-xs text-zinc-500 uppercase tracking-wide">Pain Level</span>
+                  <span className="text-2xl font-bold">
+                    {callSummary.painLevel !== null ? (
+                      <span className={callSummary.painLevel <= 3 ? "text-green-400" : callSummary.painLevel <= 6 ? "text-yellow-400" : "text-red-400"}>
+                        {callSummary.painLevel}<span className="text-sm text-zinc-500">/10</span>
+                      </span>
+                    ) : (
+                      <span className="text-zinc-600 text-sm">N/A</span>
+                    )}
+                  </span>
+                </div>
+
+                {/* PT Exercise */}
+                <div className="rounded-xl bg-zinc-800/60 p-3 flex flex-col gap-1">
+                  <span className="text-xs text-zinc-500 uppercase tracking-wide">PT Exercise</span>
+                  <span className="text-2xl font-bold">
+                    {callSummary.ptExercise === true ? (
+                      <span className="text-green-400">Active</span>
+                    ) : callSummary.ptExercise === false ? (
+                      <span className="text-red-400">Not yet</span>
+                    ) : (
+                      <span className="text-zinc-600 text-sm">N/A</span>
+                    )}
+                  </span>
+                </div>
+              </div>
+
+              {/* Symptoms */}
+              {callSummary.symptoms.length > 0 && (
+                <div className="flex flex-col gap-2">
+                  <span className="text-xs text-zinc-500 uppercase tracking-wide">Symptoms</span>
+                  <div className="flex flex-wrap gap-2">
+                    {callSummary.symptoms.map((s, i) => (
+                      <span key={i} className="px-3 py-1 rounded-full bg-red-500/10 text-red-300 text-xs border border-red-500/20">
+                        {s}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Recommendation */}
+              {callSummary.recommendation && (
+                <div className="flex flex-col gap-1">
+                  <span className="text-xs text-zinc-500 uppercase tracking-wide">Recommendation</span>
+                  <p className="text-zinc-300 text-sm">{callSummary.recommendation}</p>
+                </div>
+              )}
+
+              {/* Concerns */}
+              {callSummary.concerns && (
+                <div className="flex flex-col gap-1">
+                  <span className="text-xs text-zinc-500 uppercase tracking-wide">Patient Concerns</span>
+                  <p className="text-zinc-300 text-sm">{callSummary.concerns}</p>
+                </div>
+              )}
+
+              {/* Follow Up */}
+              {callSummary.followUp && (
+                <div className="rounded-xl bg-blue-500/10 border border-blue-500/20 p-3">
+                  <span className="text-xs text-blue-400 uppercase tracking-wide font-semibold">Follow Up</span>
+                  <p className="text-blue-200 text-sm mt-1">{callSummary.followUp}</p>
+                </div>
+              )}
+            </div>
+          ) : messages.length > 0 ? (
+            /* Fallback: show conversation if no summary */
             <div className="w-full flex flex-col gap-3 mt-4 max-h-[400px] overflow-y-auto px-2">
-              <h2 className="text-sm font-semibold text-zinc-500 uppercase tracking-wide">Conversation Summary</h2>
+              <h2 className="text-sm font-semibold text-zinc-500 uppercase tracking-wide">Conversation</h2>
               {messages.map((msg, i) => (
                 <div
                   key={i}
@@ -395,12 +592,14 @@ export default function Home() {
                       : "self-start bg-zinc-800 text-zinc-100"
                   }`}
                 >
-                  <p className="text-xs font-semibold mb-1 ${msg.role === 'user' ? 'text-blue-400' : 'text-zinc-400'}">
-                    {msg.role === "user" ? "You" : "PulseCall AI"}
-                  </p>
                   <p className="text-sm leading-relaxed">{msg.content}</p>
                 </div>
               ))}
+            </div>
+          ) : (
+            /* No messages at all */
+            <div className="w-full rounded-2xl bg-zinc-900 border border-zinc-800 p-6 flex flex-col items-center gap-2">
+              <p className="text-zinc-500 text-sm">No conversation recorded</p>
             </div>
           )}
 
@@ -409,11 +608,15 @@ export default function Home() {
               setMessages([]);
               messagesRef.current = [];
               setCallDuration(0);
-              answerCall(); 
+              setCallSummary(null);
+              setCallState("home");
             }}
-            className="mt-6 mb-8 px-8 py-3 rounded-full bg-green-500 text-white font-semibold hover:bg-green-600 transition duration-200"
-            >
-            New Call
+            className="mt-4 mb-8 px-8 py-3 rounded-full bg-zinc-700 text-white font-semibold hover:bg-zinc-600 transition duration-200 flex items-center gap-2"
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" />
+            </svg>
+            Back to Home
           </button>
         </div>
       </div>

@@ -40,6 +40,22 @@ export const patientProfile = {
     name: "Linda Thompson (Wife)",
     phone: "+1-555-0192",
   },
+  previousCalls: [
+    {
+      date: "2026-02-03",
+      summary:
+        "First post-op check-in. Pain 7/10 around the knee. Significant swelling. Has not started PT exercises yet. Advised to begin gentle range-of-motion exercises and ice 20 min every 2-3 hours.",
+      painLevel: 7,
+      symptoms: ["severe knee pain", "swelling", "difficulty bending knee"],
+    },
+    {
+      date: "2026-02-10",
+      summary:
+        "Second check-in. Pain improved to 5/10. Started PT exercises 2 days ago. Reports morning stiffness that loosens up after walking. Mild swelling remains. Reminded to keep elevating leg and continue icing.",
+      painLevel: 5,
+      symptoms: ["moderate knee pain", "morning stiffness", "mild swelling"],
+    },
+  ],
 };
 
 export function getPatientContext(): string {
@@ -65,5 +81,15 @@ POST-OP INSTRUCTIONS:
 ${p.postOpInstructions.map((i) => `- ${i}`).join("\n")}
 
 NEXT APPOINTMENT: ${p.nextAppointment}
+
+PREVIOUS CALL LOGS (most recent first):
+${p.previousCalls
+  .slice()
+  .reverse()
+  .map(
+    (c) =>
+      `- ${c.date}: Pain ${c.painLevel}/10 — ${c.summary}`
+  )
+  .join("\n")}
   `.trim();
 }

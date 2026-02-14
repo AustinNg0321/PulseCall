@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getPatientContext } from "./patientData";
 
+// Keep the original System Prompt
 const SYSTEM_PROMPT = `You are PulseCall, a friendly AI medical assistant on a post-op check-in call. You have the patient's records below.
 
 ${getPatientContext()}
@@ -46,7 +47,7 @@ PATIENT-SPECIFIC REFERENCE (use naturally, don't recite):
 
 export async function POST(req: NextRequest) {
   const openrouterKey = process.env.OPENROUTER_API_KEY;
-  const smallestKey = process.env.SMALLEST_AI_API_KEY;
+  const smallestKey = process.env.SMALLEST_AI_API_KEY; // Using Smallest AI Key
 
   if (!openrouterKey || !smallestKey) {
     return NextResponse.json(
@@ -56,9 +57,11 @@ export async function POST(req: NextRequest) {
   }
 
   try {
-    const { transcription, history } = await req.json();
+    // Check for 'trigger' in the request body
+    const { transcription, history, trigger } = await req.json();
 
-    if (!transcription) {
+    // If it's NOT the initial trigger, we require a transcription
+    if (!transcription && trigger !== "initial") {
       return NextResponse.json(
         { error: "No transcription provided" },
         { status: 400 }
@@ -68,27 +71,29 @@ export async function POST(req: NextRequest) {
     const pastMessages: { role: string; content: string }[] = history || [];
     const turnNumber = Math.floor(pastMessages.length / 2) + 1;
 
-    // Build messages with conversation context
+    // Build the message array for the LLM
     const messages: { role: string; content: string }[] = [
       { role: "system", content: SYSTEM_PROMPT },
       ...pastMessages,
     ];
 
-    // Add turn-awareness hint to help the model stay on track
-    if (turnNumber === 1) {
+    // --- Logic for Initial Call (AI speaks first) ---
+    if (trigger === "initial") {
       messages.push({
         role: "user",
-        content: `${transcription}\n\n[System note: This is the FIRST message. Greet the patient briefly, then respond to what they said.]`,
+        // Hidden instruction to force the AI to start Step 1
+        content: `[System Event: The patient has picked up the phone. Start the conversation with STEP 1 immediately.]`,
       });
     } else {
+      // --- Logic for Ongoing Conversation ---
       messages.push({
         role: "user",
-        content: `${transcription}\n\n[System note: This is turn ${turnNumber} of an ongoing conversation. DO NOT greet or introduce yourself. Continue the conversation naturally based on the history above. Advance to the next step in the flow.]`,
+        content: `${transcription}\n\n[System note: This is turn ${turnNumber}. Continue the flow naturally.]`,
       });
     }
 
-    // Step 1: Get LLM response via OpenRouter
-    console.log("Calling OpenRouter with transcription:", transcription, "turn:", turnNumber);
+    // 1. Get Text Response from LLM (OpenRouter)
+    console.log("Calling OpenRouter...");
     const llmRes = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
       headers: {
@@ -96,7 +101,7 @@ export async function POST(req: NextRequest) {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: "anthropic/claude-sonnet-4",
+        model: "anthropic/claude-sonnet-4", // or your preferred model
         max_tokens: 300,
         messages,
       }),
@@ -112,8 +117,9 @@ export async function POST(req: NextRequest) {
     const reply = llmData.choices?.[0]?.message?.content || "";
     console.log("LLM reply:", reply);
 
-    // Step 2: Convert reply to speech via Smallest AI TTS
-    console.log("Calling TTS...");
+    // 2. Get Audio from Smallest.ai (Waves API)
+    // This is used for BOTH the initial greeting and subsequent replies
+    console.log("Calling Smallest.ai TTS...");
     const ttsRes = await fetch(
       "https://waves-api.smallest.ai/api/v1/lightning-v3.1/get_speech",
       {
@@ -124,7 +130,7 @@ export async function POST(req: NextRequest) {
         },
         body: JSON.stringify({
           text: reply,
-          voice_id: "rachel",
+          voice_id: "rachel", // Ensure this voice ID is valid for your account
           sample_rate: 24000,
           speed: 1,
           output_format: "mp3",
@@ -135,13 +141,20 @@ export async function POST(req: NextRequest) {
     if (!ttsRes.ok) {
       const errText = await ttsRes.text();
       console.error("TTS error:", errText);
-      return NextResponse.json({ reply, audio: null, ttsError: errText });
+      // Return the text reply even if TTS fails
+      const endingPatterns = /\b(goodbye|good bye|bye|take care|have a (good|great|nice) (day|evening|night|one))\b/i;
+      const isEnding = endingPatterns.test(reply);
+      return NextResponse.json({ reply, audio: null, ttsError: errText, isEnding });
     }
 
     const audioBuffer = await ttsRes.arrayBuffer();
     const audioBase64 = Buffer.from(audioBuffer).toString("base64");
 
-    return NextResponse.json({ reply, audio: audioBase64 });
+    // Detect if the AI is ending the conversation
+    const endingPatterns = /\b(goodbye|good bye|bye|take care|have a (good|great|nice) (day|evening|night|one))\b/i;
+    const isEnding = endingPatterns.test(reply);
+
+    return NextResponse.json({ reply, audio: audioBase64, isEnding });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : JSON.stringify(err);
     console.error("Chat API error:", message);

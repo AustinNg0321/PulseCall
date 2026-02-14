@@ -11,7 +11,7 @@ interface ChatMessage {
 }
 
 const SILENCE_THRESHOLD = 0.01;
-const SILENCE_DURATION = 800; // ms of silence before auto-stop
+const SILENCE_DURATION = 1000; // ms of silence before auto-stop
 
 export default function Home() {
   const [callState, setCallState] = useState<CallState>("incoming");

@@ -7,6 +7,7 @@ to decide whether to retry, escalate, or proceed with transcript analysis.
 from __future__ import annotations
 
 import logging
+from typing import Optional
 
 from models import (
     AudioMetrics,
@@ -136,7 +137,7 @@ def analyze_vitals(payload: SmallestAIPostCallPayload) -> TriageResult:
 def _check_distress_emotions(
     emotions: list[EmotionDetection],
     transcript: list[TranscriptSegment],
-) -> EmotionDetection | None:
+) -> Optional[EmotionDetection]:
     """Return the first distress emotion found, or None."""
     # Check top-level emotions list
     for em in emotions:
@@ -151,7 +152,7 @@ def _check_distress_emotions(
     return None
 
 
-def _check_distress_keywords(transcript: list[TranscriptSegment]) -> str | None:
+def _check_distress_keywords(transcript: list[TranscriptSegment]) -> Optional[str]:
     """Return the first distress keyword found in the transcript, or None."""
     for seg in transcript:
         text_lower = seg.text.lower()

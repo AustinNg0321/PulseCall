@@ -6,6 +6,8 @@ import json
 import logging
 import os
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Optional, Union
 from uuid import uuid4
 
 import httpx
@@ -15,7 +17,10 @@ from dotenv import load_dotenv
 from database import CallRecord, SessionLocal, UserRecord, init_db
 from models import CallState, OutboundCallRequest
 
-load_dotenv()
+# Set .env file path based on current file location
+env_path = Path(__file__).parent / ".env"
+
+load_dotenv(dotenv_path=env_path)
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +44,7 @@ scheduler = AsyncIOScheduler()
 # ---------------------------------------------------------------------------
 # Smallest.ai outbound call
 # ---------------------------------------------------------------------------
-async def place_outbound_call(request: OutboundCallRequest) -> str | None:
+async def place_outbound_call(request: OutboundCallRequest) -> Optional[str]:
     """Place an outbound call via Smallest.ai API.
 
     Returns the Smallest.ai call_id on success, or None on failure.

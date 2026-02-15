@@ -24,6 +24,9 @@ export interface CampaignCreate {
   system_prompt: string;
   escalation_keywords: string[];
   recipients: Recipient[];
+  patient_context?: string;
+  patient_data?: Record<string, unknown>;
+  voice_id?: string;
 }
 
 export interface Conversation {

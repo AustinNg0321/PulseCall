@@ -65,14 +65,14 @@ class TranscriptSegment(BaseModel):
     start: float = 0.0
     end: float = 0.0
     word_timestamps: list[WordTimestamp] = Field(default_factory=list)
-    emotion: EmotionDetection | None = None
+    emotion: Optional[EmotionDetection] = None
 
 
 class SmallestAIPostCallPayload(BaseModel):
     """Webhook payload sent by Smallest.ai after a call ends."""
     call_id: str
     user_id: str
-    campaign_id: str | None = None
+    campaign_id: Optional[str] = None
     status: str = Field(description="completed, no_answer, busy, failed")
     audio_metrics: AudioMetrics
     transcript: list[TranscriptSegment] = Field(default_factory=list)
@@ -87,8 +87,8 @@ class SmallestAIAnalyticsPayload(BaseModel):
     audio_metrics: AudioMetrics
     transcript: list[TranscriptSegment] = Field(default_factory=list)
     emotions: list[EmotionDetection] = Field(default_factory=list)
-    summary: str | None = None
-    sentiment: str | None = None
+    summary: Optional[str] = None
+    sentiment: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -98,7 +98,7 @@ class TriageResult(BaseModel):
     classification: TriageClassification
     reason: str
     action: str
-    retry_delay_minutes: int | None = None
+    retry_delay_minutes: Optional[int] = None
     escalate: bool = False
 
 
@@ -109,6 +109,6 @@ class OutboundCallRequest(BaseModel):
     user_id: str
     user_name: str
     phone_number: str
-    campaign_id: str | None = None
+    campaign_id: Optional[str] = None
     system_prompt: str = ""
     voice_id: str = "emily"

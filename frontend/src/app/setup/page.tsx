@@ -14,6 +14,8 @@ export default function SetupPage() {
   const [conversationGoal, setConversationGoal] = useState("");
   const [systemPrompt, setSystemPrompt] = useState("");
   const [escalationKeywords, setEscalationKeywords] = useState("");
+  const [patientContext, setPatientContext] = useState("");
+  const [voiceId, setVoiceId] = useState("rachel");
   const [recipientName, setRecipientName] = useState("");
   const [recipientPhone, setRecipientPhone] = useState("");
   const [recipientEmail, setRecipientEmail] = useState("");
@@ -40,6 +42,8 @@ export default function SetupPage() {
             email: recipientEmail || undefined,
           },
         ],
+        patient_context: patientContext || undefined,
+        voice_id: voiceId,
       });
       router.push(`/simulate/${campaign.id}`);
     } catch (err) {
@@ -106,16 +110,40 @@ export default function SetupPage() {
           />
         </Field>
 
-        {/* Escalation Keywords */}
-        <Field label="Escalation Keywords" hint="Comma-separated">
-          <input
-            type="text"
-            value={escalationKeywords}
-            onChange={(e) => setEscalationKeywords(e.target.value)}
-            placeholder="e.g. chest pain, can't breathe, fell, bleeding"
+        {/* Patient Context */}
+        <Field label="Patient Context" hint="Injected into AI prompt">
+          <textarea
+            value={patientContext}
+            onChange={(e) => setPatientContext(e.target.value)}
+            placeholder={"Patient: Michael Thompson, 58M\nSurgery: Total Knee Replacement, Jan 28 2026\nMedications: Acetaminophen 500mg, Celecoxib 200mg\nAllergies: Penicillin\nPrevious calls: Pain 7/10 → 5/10 (improving)"}
+            rows={5}
             className="w-full rounded-lg border border-zinc-700 bg-zinc-900 px-4 py-2.5 text-sm text-white placeholder-zinc-500 outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
           />
         </Field>
+
+        {/* Voice & Escalation */}
+        <div className="grid grid-cols-2 gap-4">
+          <Field label="TTS Voice">
+            <select
+              value={voiceId}
+              onChange={(e) => setVoiceId(e.target.value)}
+              className="w-full rounded-lg border border-zinc-700 bg-zinc-900 px-4 py-2.5 text-sm text-white outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
+            >
+              <option value="rachel">Rachel</option>
+              <option value="emily">Emily</option>
+              <option value="matt">Matt</option>
+            </select>
+          </Field>
+          <Field label="Escalation Keywords" hint="Comma-separated">
+            <input
+              type="text"
+              value={escalationKeywords}
+              onChange={(e) => setEscalationKeywords(e.target.value)}
+              placeholder="e.g. chest pain, bleeding"
+              className="w-full rounded-lg border border-zinc-700 bg-zinc-900 px-4 py-2.5 text-sm text-white placeholder-zinc-500 outline-none focus:border-emerald-500 focus:ring-1 focus:ring-emerald-500"
+            />
+          </Field>
+        </div>
 
         {/* Recipient */}
         <fieldset className="rounded-lg border border-zinc-800 p-4">

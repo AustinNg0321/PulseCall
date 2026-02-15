@@ -4,11 +4,16 @@ from __future__ import annotations
 
 import logging
 import os
+from pathlib import Path
+from typing import Optional
 
 from dotenv import load_dotenv
 from twilio.rest import Client as TwilioClient
 
-load_dotenv()
+# Set .env file path based on current file location
+env_path = Path(__file__).parent / ".env"
+
+load_dotenv(dotenv_path=env_path)
 
 logger = logging.getLogger(__name__)
 
@@ -21,10 +26,10 @@ TWILIO_FROM_NUMBER = os.getenv("TWILIO_FROM_NUMBER", "")
 ESCALATION_TO_NUMBER = os.getenv("ESCALATION_TO_NUMBER", "")
 TRANSCRIPT_BASE_URL = os.getenv("TRANSCRIPT_BASE_URL", "http://localhost:8000")
 
-_twilio_client: TwilioClient | None = None
+_twilio_client: Optional[TwilioClient] = None
 
 
-def _get_twilio_client() -> TwilioClient | None:
+def _get_twilio_client() -> Optional[TwilioClient]:
     global _twilio_client
     if _twilio_client is not None:
         return _twilio_client
@@ -42,7 +47,7 @@ def send_escalation_sms(
     user_name: str,
     triage_reason: str,
     call_id: str,
-    to_number: str | None = None,
+    to_number: Optional[str] = None,
 ) -> bool:
     """Send an emergency SMS via Twilio.
 
@@ -81,7 +86,7 @@ def send_escalation_email(
     user_name: str,
     triage_reason: str,
     call_id: str,
-    to_email: str | None = None,
+    to_email: Optional[str] = None,
 ) -> bool:
     """Placeholder for email escalation — logs the alert for now."""
     transcript_link = f"{TRANSCRIPT_BASE_URL}/calls/{call_id}"

@@ -1,13 +1,19 @@
 from __future__ import annotations
 
+import base64
 import json
 import logging
+import os
+import re
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from typing import Any, Literal
+from pathlib import Path
+from typing import Any, Literal, Optional
 from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException
+import httpx
+from dotenv import load_dotenv
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -23,6 +29,14 @@ from models import (
 from notifier import send_escalation_sms
 from scheduler import place_outbound_call, schedule_retry, start_scheduler, stop_scheduler
 from triage import analyze_vitals
+
+# Load env
+env_path = Path(__file__).parent / ".env"
+load_dotenv(dotenv_path=env_path)
+
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
+SMALLEST_AI_API_KEY = os.getenv("SMALLEST_AI_API_KEY", "")
+VOICE_LLM_MODEL = "meta-llama/llama-3.3-70b-instruct:free"
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -52,8 +66,8 @@ app.add_middleware(
 # -----------------------------
 class Recipient(BaseModel):
     name: str
-    phone: str | None = None
-    email: str | None = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
 
 
 class CampaignCreate(BaseModel):
@@ -63,6 +77,9 @@ class CampaignCreate(BaseModel):
     system_prompt: str
     escalation_keywords: list[str] = Field(default_factory=list)
     recipients: list[Recipient]
+    patient_context: Optional[str] = None
+    patient_data: Optional[dict] = None
+    voice_id: Optional[str] = "rachel"
 
 
 class CampaignOut(CampaignCreate):
@@ -75,8 +92,12 @@ class Conversation(BaseModel):
     campaign_id: str
     status: Literal["active", "inactive"]
     start_time: str
-    end_time: str | None = None
+    end_time: Optional[str] = None
     history: list[dict[str, str]]
+
+
+class ChatRequest(BaseModel):
+    message: str
 
 
 class EndCallOut(BaseModel):
@@ -88,7 +109,7 @@ class EndCallOut(BaseModel):
     sentiment_score: int
     detected_flags: list[str]
     recommended_action: str
-    escalation_id: str | None = None
+    escalation_id: Optional[str] = None
 
 
 # -----------------------------
@@ -138,66 +159,317 @@ def recommended_action_for_flags(flags: list[str]) -> str:
     return "Escalate to a human operator within 15 minutes."
 
 
+def _build_patient_context(pd: dict) -> str:
+    """Build LLM-ready patient context string from patient_data dict."""
+    lines = [
+        "PATIENT PROFILE:",
+        f"- Name: {pd.get('name', 'Unknown')}, Age: {pd.get('age', 'N/A')}, Gender: {pd.get('gender', 'N/A')}",
+        f"- Patient ID: {pd.get('id', 'N/A')}",
+        f"- Primary Diagnosis: {pd.get('primaryDiagnosis', 'N/A')}",
+        "",
+        "SURGICAL HISTORY:",
+    ]
+    for s in pd.get("surgicalHistory", []):
+        lines.append(f"- {s.get('procedure', '')} on {s.get('date', '')} by {s.get('surgeon', '')} at {s.get('hospital', '')}. {s.get('notes', '')}")
+    lines.append("")
+    lines.append("CURRENT MEDICATIONS:")
+    for m in pd.get("medications", []):
+        lines.append(f"- {m.get('name', '')} {m.get('dosage', '')} — {m.get('frequency', '')}")
+    allergies = pd.get("allergies", [])
+    lines.append(f"\nALLERGIES: {', '.join(allergies) if allergies else 'None known'}")
+    vs = pd.get("vitalSigns", {})
+    if vs:
+        lines.append(f"\nVITAL SIGNS (Last Recorded):")
+        lines.append(f"- BP: {vs.get('bloodPressure', 'N/A')}, HR: {vs.get('heartRate', 'N/A')}, Temp: {vs.get('temperature', 'N/A')}")
+    poi = pd.get("postOpInstructions", [])
+    if poi:
+        lines.append("\nPOST-OP INSTRUCTIONS:")
+        for i in poi:
+            lines.append(f"- {i}")
+    lines.append(f"\nNEXT APPOINTMENT: {pd.get('nextAppointment', 'N/A')}")
+    prev = pd.get("previousCalls", [])
+    if prev:
+        lines.append("\nPREVIOUS CALL LOGS (most recent first):")
+        for c in reversed(prev):
+            lines.append(f"- {c.get('date', '')}: Pain {c.get('painLevel', '?')}/10 — {c.get('summary', '')}")
+    ec = pd.get("emergencyContact", {})
+    if ec:
+        lines.append(f"\nEMERGENCY CONTACT: {ec.get('name', 'N/A')}, {ec.get('phone', 'N/A')}")
+    return "\n".join(lines)
+
+
+def _build_system_prompt(campaign: dict) -> str:
+    """Build the full system prompt for voice chat from campaign data."""
+    pd = campaign.get("patient_data", {})
+    patient_ctx = campaign.get("patient_context") or ""
+    if pd and not patient_ctx:
+        patient_ctx = _build_patient_context(pd)
+
+    base_prompt = campaign.get("system_prompt", "You are a helpful AI assistant.")
+
+    if not patient_ctx:
+        return base_prompt
+
+    name_first = pd.get("name", "the patient").split()[0] if pd else "the patient"
+    allergies = pd.get("allergies", [])
+    meds = pd.get("medications", [])
+    surgery = pd.get("surgicalHistory", [{}])[0] if pd.get("surgicalHistory") else {}
+    next_appt = pd.get("nextAppointment", "TBD")
+    ec = pd.get("emergencyContact", {})
+    poi = pd.get("postOpInstructions", [])
+
+    return f"""You are PulseCall, a friendly AI medical assistant on a post-op check-in call. You have the patient's records below.
+
+{patient_ctx}
+
+CRITICAL RULES:
+- NEVER re-introduce yourself after the first message. No "Hi {name_first}" after turn 1.
+- NEVER re-ask a question the patient already answered. Read the conversation history carefully.
+- Keep every response to 1-2 sentences. This is a phone call, not an essay.
+- Ask only ONE question per response. Never stack multiple questions.
+- Never diagnose or prescribe new medications. Only reference existing medications and post-op instructions.
+- Allergy Alert: Patient is allergic to {', '.join(allergies) if allergies else 'nothing known'}. Never suggest products containing these.
+- When you are ready to end the call, append [END_CALL] at the very end of your response.
+
+PREVIOUS CALL AWARENESS:
+- You have access to PREVIOUS CALL LOGS above. Use them naturally.
+- If pain has improved, acknowledge it: "Last time your pain was around X. How's it feeling now?"
+- Don't repeat advice already given in previous calls. Build on it instead.
+
+CONVERSATION FLOW — follow these steps strictly, one per turn:
+
+STEP 1 (first message only): Greet briefly. "Hi {name_first}, this is PulseCall checking in after your {surgery.get('procedure', 'surgery')}. How are you feeling today?"
+
+STEP 2 (patient reports a symptom): Ask severity. "On a scale of 1 to 10, how bad is that?"
+
+STEP 3 (patient gives severity): Ask about specific care (e.g., "Are you doing your PT exercises?" or "Are you icing as instructed?").
+
+STEP 4 (patient answers): Give ONE recommendation from POST-OP INSTRUCTIONS or advice to call the doctor if pain is 7+. Then ask: "Does that clear things up, or is there anything else?"
+
+STEP 5 (patient mentions another issue): Go back to STEP 2 for the new issue.
+
+STEP 6 (patient says nothing else / wraps up): Briefly summarize what to do, remind them their next appointment is {next_appt}, and say goodbye. Appointment Date must be in words. [END_CALL]
+
+URGENT SYMPTOMS — skip the flow and act immediately:
+- Calf pain, leg swelling, or shortness of breath → possible blood clot. Say: "That could be serious. I need you to go to the ER right away or call 911. Can {ec.get('name', 'your emergency contact').split('(')[0].strip().split()[0] if ec else 'someone'} drive you?"
+- Fever above 38.3°C, wound drainage, increasing redness → possible infection. Say: "Call the doctor's office right away — that needs to be looked at today."
+- Chest pain → Say: "Call 911 immediately."
+
+{base_prompt}"""
+
+
+# --- Seed Data: Multiple patient campaigns ---
+
+SEED_PATIENTS = [
+    {
+        "campaign_id": "cmp_demo_001",
+        "name": "Post-Op Check-in: Michael Thompson",
+        "agent_persona": "PulseCall Medical Assistant",
+        "conversation_goal": "Check on Michael's recovery after total knee replacement surgery.",
+        "escalation_keywords": ["blood clot", "infection", "fever", "chest pain", "911", "emergency"],
+        "voice_id": "rachel",
+        "patient_data": {
+            "id": "PT-20240312",
+            "name": "Michael Thompson",
+            "age": 58,
+            "gender": "Male",
+            "primaryDiagnosis": "Osteoarthritis of the right knee",
+            "surgicalHistory": [
+                {
+                    "procedure": "Total Right Knee Replacement (TKR)",
+                    "date": "2026-01-28",
+                    "surgeon": "Dr. Sarah Chen",
+                    "hospital": "St. Mary's General Hospital",
+                    "notes": "Uneventful surgery. Cemented prosthesis implanted.",
+                }
+            ],
+            "medications": [
+                {"name": "Acetaminophen", "dosage": "500mg", "frequency": "Every 6 hours as needed"},
+                {"name": "Celecoxib", "dosage": "200mg", "frequency": "Once daily"},
+                {"name": "Enoxaparin", "dosage": "40mg SC", "frequency": "Once daily for 14 days (blood clot prevention)"},
+                {"name": "Lisinopril", "dosage": "10mg", "frequency": "Once daily (blood pressure)"},
+            ],
+            "allergies": ["Penicillin (rash)", "Latex (mild irritation)"],
+            "vitalSigns": {"bloodPressure": "132/84 mmHg", "heartRate": "76 bpm", "temperature": "36.8°C", "weight": "88 kg", "height": "178 cm"},
+            "postOpInstructions": [
+                "Perform prescribed physical therapy exercises 3 times daily",
+                "Keep surgical wound clean and dry",
+                "Use ice packs for 20 minutes every 2-3 hours to reduce swelling",
+                "Use walker or crutches for ambulation",
+                "Elevate leg when sitting or lying down",
+                "Report any signs of infection: increased redness, warmth, drainage, or fever above 38.3°C",
+            ],
+            "nextAppointment": "2026-02-21",
+            "emergencyContact": {"name": "Linda Thompson (Wife)", "phone": "+1-555-0192"},
+            "previousCalls": [
+                {
+                    "date": "2026-02-03",
+                    "summary": "First post-op check-in. Pain 7/10 around the knee. Significant swelling. Has not started PT exercises yet. Advised to begin gentle range-of-motion exercises and ice 20 min every 2-3 hours.",
+                    "painLevel": 7,
+                    "symptoms": ["severe knee pain", "swelling", "difficulty bending knee"],
+                },
+                {
+                    "date": "2026-02-10",
+                    "summary": "Second check-in. Pain improved to 5/10. Started PT exercises 2 days ago. Reports morning stiffness that loosens up after walking. Mild swelling remains. Reminded to keep elevating leg and continue icing.",
+                    "painLevel": 5,
+                    "symptoms": ["moderate knee pain", "morning stiffness", "mild swelling"],
+                },
+            ],
+        },
+    },
+    {
+        "campaign_id": "cmp_demo_002",
+        "name": "Post-Op Check-in: Sarah Kim",
+        "agent_persona": "PulseCall Medical Assistant",
+        "conversation_goal": "Check on Sarah's recovery after ACL reconstruction surgery.",
+        "escalation_keywords": ["blood clot", "infection", "fever", "chest pain", "911", "emergency", "popping"],
+        "voice_id": "rachel",
+        "patient_data": {
+            "id": "PT-20240415",
+            "name": "Sarah Kim",
+            "age": 34,
+            "gender": "Female",
+            "primaryDiagnosis": "Complete ACL tear, left knee (sports injury)",
+            "surgicalHistory": [
+                {
+                    "procedure": "ACL Reconstruction (Hamstring Autograft)",
+                    "date": "2026-02-01",
+                    "surgeon": "Dr. James Park",
+                    "hospital": "Waterloo Sports Medicine Center",
+                    "notes": "Arthroscopic procedure. Meniscus intact. Successful graft fixation.",
+                }
+            ],
+            "medications": [
+                {"name": "Ibuprofen", "dosage": "400mg", "frequency": "Every 8 hours with food"},
+                {"name": "Acetaminophen", "dosage": "500mg", "frequency": "Every 6 hours as needed (alternate with ibuprofen)"},
+                {"name": "Aspirin", "dosage": "81mg", "frequency": "Once daily for 14 days (blood clot prevention)"},
+            ],
+            "allergies": ["Sulfa drugs (hives)"],
+            "vitalSigns": {"bloodPressure": "118/72 mmHg", "heartRate": "68 bpm", "temperature": "36.6°C", "weight": "62 kg", "height": "165 cm"},
+            "postOpInstructions": [
+                "Wear knee brace locked at 0° extension for first 2 weeks",
+                "Begin gentle quad sets and straight leg raises on day 2",
+                "Use crutches — weight-bear as tolerated",
+                "Ice knee 20 minutes every 2 hours while awake",
+                "Keep incision sites clean and dry for 10 days",
+                "No pivoting, twisting, or running for 6 months",
+                "Attend PT sessions 3x/week starting week 2",
+            ],
+            "nextAppointment": "2026-02-18",
+            "emergencyContact": {"name": "David Kim (Husband)", "phone": "+1-555-0234"},
+            "previousCalls": [
+                {
+                    "date": "2026-02-05",
+                    "summary": "First check-in. Pain 6/10, mostly when straightening leg. Swelling moderate. Started quad sets. Ice helping. Crutch use good. Reminded about brace at 0° rule.",
+                    "painLevel": 6,
+                    "symptoms": ["knee pain on extension", "moderate swelling", "stiffness"],
+                },
+            ],
+        },
+    },
+    {
+        "campaign_id": "cmp_demo_003",
+        "name": "Post-Op Check-in: James Rodriguez",
+        "agent_persona": "PulseCall Medical Assistant",
+        "conversation_goal": "Check on James's recovery after total hip replacement surgery.",
+        "escalation_keywords": ["blood clot", "infection", "fever", "chest pain", "911", "emergency", "dislocation", "pop"],
+        "voice_id": "rachel",
+        "patient_data": {
+            "id": "PT-20240528",
+            "name": "James Rodriguez",
+            "age": 72,
+            "gender": "Male",
+            "primaryDiagnosis": "Severe osteoarthritis of the left hip",
+            "surgicalHistory": [
+                {
+                    "procedure": "Total Left Hip Replacement (Anterior Approach)",
+                    "date": "2026-02-05",
+                    "surgeon": "Dr. Emily Watson",
+                    "hospital": "Grand River Hospital",
+                    "notes": "Ceramic-on-polyethylene bearing. No intraoperative complications.",
+                }
+            ],
+            "medications": [
+                {"name": "Acetaminophen", "dosage": "1000mg", "frequency": "Every 8 hours"},
+                {"name": "Tramadol", "dosage": "50mg", "frequency": "Every 6 hours as needed for breakthrough pain"},
+                {"name": "Enoxaparin", "dosage": "40mg SC", "frequency": "Once daily for 28 days (blood clot prevention)"},
+                {"name": "Metformin", "dosage": "500mg", "frequency": "Twice daily (diabetes)"},
+                {"name": "Amlodipine", "dosage": "5mg", "frequency": "Once daily (blood pressure)"},
+            ],
+            "allergies": ["Codeine (nausea/vomiting)", "Shellfish (anaphylaxis)"],
+            "vitalSigns": {"bloodPressure": "140/88 mmHg", "heartRate": "82 bpm", "temperature": "37.0°C", "weight": "95 kg", "height": "175 cm"},
+            "postOpInstructions": [
+                "Follow hip precautions: no crossing legs, no bending hip past 90°, no twisting",
+                "Use walker for 4-6 weeks",
+                "Perform ankle pumps and gentle hip exercises 3x daily",
+                "Sleep on back or non-operative side with pillow between knees",
+                "Keep incision clean and dry — steri-strips will fall off on their own",
+                "Monitor blood sugar closely — surgery can affect levels",
+                "Report any sudden increase in pain, leg shortening, or inability to bear weight",
+            ],
+            "nextAppointment": "2026-02-25",
+            "emergencyContact": {"name": "Maria Rodriguez (Wife)", "phone": "+1-555-0371"},
+            "previousCalls": [
+                {
+                    "date": "2026-02-08",
+                    "summary": "First check-in. Pain 8/10 at surgical site, worse with movement. Using walker consistently. Has not started exercises yet. Blood sugar slightly elevated at 180. Advised gentle ankle pumps and to contact endocrinologist about sugar levels.",
+                    "painLevel": 8,
+                    "symptoms": ["severe hip pain", "difficulty walking", "elevated blood sugar"],
+                },
+                {
+                    "date": "2026-02-12",
+                    "summary": "Second check-in. Pain improved to 6/10. Started ankle pumps. Blood sugar stabilized at 140. Sleeping on back with pillow. Reports some bruising around incision — normal healing. Reminded about hip precautions.",
+                    "painLevel": 6,
+                    "symptoms": ["moderate hip pain", "bruising around incision", "limited mobility"],
+                },
+            ],
+        },
+    },
+]
+
+
 def seed_example_data() -> None:
-    campaign_id = "cmp_demo_001"
-    conversation_id = "conv_demo_001"
+    for sp in SEED_PATIENTS:
+        campaign_id = sp["campaign_id"]
+        pd = sp["patient_data"]
+        patient_context = _build_patient_context(pd)
+
+        campaign = {
+            "id": campaign_id,
+            "name": sp["name"],
+            "agent_persona": sp["agent_persona"],
+            "conversation_goal": sp["conversation_goal"],
+            "system_prompt": "Be concise, empathetic, and clear. Ask one question at a time.",
+            "escalation_keywords": sp["escalation_keywords"],
+            "recipients": [{"name": pd["name"], "phone": pd.get("emergencyContact", {}).get("phone", "")}],
+            "patient_context": patient_context,
+            "patient_data": pd,
+            "voice_id": sp.get("voice_id", "rachel"),
+            "created_at": now_iso(),
+        }
+        store["campaigns"][campaign_id] = campaign
+
+    # Add a sample call for the first campaign
     call_id = "call_demo_001"
     escalation_id = "esc_demo_001"
-    created_at = now_iso()
-
-    campaign = {
-        "id": campaign_id,
-        "name": "Care Plan Renewal",
-        "agent_persona": "Calm healthcare outreach specialist",
-        "conversation_goal": "Confirm whether recipient wants help renewing care plan.",
-        "system_prompt": "Be concise, empathetic, and clear. Ask one question at a time.",
-        "escalation_keywords": ["cancel", "complaint", "lawyer", "fraud"],
-        "recipients": [
-            {
-                "name": "Alex Johnson",
-                "phone": "+1-555-0100",
-                "email": "alex@example.com",
-            }
-        ],
-        "created_at": created_at,
-    }
-    store["campaigns"][campaign_id] = campaign
-
-    transcript = [
-        {"role": "user", "content": "I want to cancel because this feels confusing."},
-        {
-            "role": "assistant",
-            "content": "I hear you. I can escalate this to a specialist right now.",
-        },
-    ]
-    call = {
+    store["calls"][call_id] = {
         "id": call_id,
-        "campaign_id": campaign_id,
-        "conversation_id": conversation_id,
-        "status": "ended",
-        "started_at": created_at,
-        "ended_at": now_iso(),
-        "transcript": transcript,
-        "summary": "Recipient expressed confusion and asked to cancel. Agent offered specialist escalation.",
-        "sentiment_score": 2,
-        "detected_flags": ["cancel"],
-        "recommended_action": "Escalate to a human operator within 15 minutes.",
-        "escalation_id": escalation_id,
-    }
-    store["calls"][call_id] = call
-
-    escalation = {
-        "id": escalation_id,
         "call_id": call_id,
-        "campaign_id": campaign_id,
-        "priority": "high",
-        "status": "open",
-        "reason": "Detected escalation keywords: cancel",
-        "detected_flags": ["cancel"],
-        "created_at": now_iso(),
-        "acknowledged_at": None,
+        "campaign_id": "cmp_demo_001",
+        "conversation_id": "conv_demo_001",
+        "status": "ended",
+        "started_at": now_iso(),
+        "ended_at": now_iso(),
+        "transcript": [
+            {"role": "user", "content": "I'm having some pain around my knee, about a 4 out of 10."},
+            {"role": "assistant", "content": "That's good to hear it's improving. Are you keeping up with your PT exercises?"},
+        ],
+        "summary": "Patient reports pain at 4/10, improving from previous 5/10. Continuing PT exercises.",
+        "sentiment_score": 4,
+        "detected_flags": [],
+        "recommended_action": "No escalation required. Follow up in normal workflow.",
+        "escalation_id": None,
     }
-    store["escalations"][escalation_id] = escalation
 
 
 seed_example_data()
@@ -211,7 +483,7 @@ def get_campaign(campaign_id: str):
 def get_conversation(conversation_id: str): 
     conversation = store["conversations"].get(conversation_id)
     if not conversation:
-        raise HTTPException(status_code=404, detail="Conversation not found")
+        raise HTTPException(status_code=404, detail=f"Conversation {conversation_id} not found. The server might have restarted.")
     return conversation
 
 def get_client_text(history: list[dict[str, str]]) -> str:
@@ -272,6 +544,9 @@ def create_conversation(campaign_id: str):
 
 @app.post("/campaigns/{campaign_id}/{conversation_id}")
 def get_response(campaign_id: str, conversation_id: str, message: str):
+    """
+    Get a response from Claude for a given conversation.
+    """
     conversation = get_conversation(conversation_id)
     if conversation["campaign_id"] != campaign_id:
         raise HTTPException(status_code=400, detail="Conversation does not belong to campaign")
@@ -282,29 +557,29 @@ def get_response(campaign_id: str, conversation_id: str, message: str):
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
 
-    history = conversation["history"]
-
-    try:
-        history.append({
-            "role": "user",
-            "content": message
-        })
-
-        response = respond(
-            user_message=message,
-            history=history,
-            system_prompt=campaign["system_prompt"],
-        )
-    except Exception:
-        raise HTTPException(status_code=500, detail="Claude response generation failed unexpectedly")
-    
-    # Add Claude response to the history
-    history.append({
-        "role": "assistant",
-        "content": response
+    # Create a temporary history to avoid corrupting the store if the API call fails
+    current_history = list(conversation["history"])
+    current_history.append({
+        "role": "user",
+        "content": message
     })
 
-    store["conversations"][conversation_id]["history"] = history
+    try:
+        response = respond(
+            user_message=message,
+            history=current_history,
+            system_prompt=campaign["system_prompt"],
+        )
+    except Exception as e:
+        logger.exception(f"Claude response generation failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Claude API Error: {str(e)}")
+    
+    # Only update the actual history if the API call was successful
+    conversation["history"] = current_history + [{
+        "role": "assistant",
+        "content": response
+    }]
+
     return response    
 
 """
@@ -317,7 +592,7 @@ class EndCallOut(BaseModel):
     sentiment_score: int
     detected_flags: list[str]
     recommended_action: str
-    escalation_id: str | None = None
+    escalation_id: Optional[str] = None
 """
 
 @app.post("/campaigns/{campaign_id}/{conversation_id}/end", response_model=EndCallOut)
@@ -349,7 +624,7 @@ def end_call(campaign_id: str, conversation_id: str) -> EndCallOut:
         recommended_action = recommended_action_for_flags(detected_flags)
 
     call_id = f"call_{uuid4().hex[:10]}"
-    escalation_id: str | None = None
+    escalation_id: Optional[str] = None
 
     if detected_flags:
         escalation_id = f"esc_{uuid4().hex[:10]}"
@@ -436,8 +711,8 @@ def acknowledge_escalation(escalation_id: str):
 class UserCreate(BaseModel):
     name: str
     phone: str
-    email: str | None = None
-    campaign_id: str | None = None
+    email: Optional[str] = None
+    campaign_id: Optional[str] = None
 
 
 @app.post("/users")
@@ -723,7 +998,7 @@ async def webhook_analytics(payload: SmallestAIAnalyticsPayload):
 # Manual trigger: place an outbound call now
 # =====================================================================
 @app.post("/calls/outbound")
-async def trigger_outbound_call(user_id: str, campaign_id: str | None = None):
+async def trigger_outbound_call(user_id: str, campaign_id: Optional[str] = None):
     """Manually trigger an outbound call for a specific user."""
     db = get_db()
     try:
@@ -762,3 +1037,199 @@ async def trigger_outbound_call(user_id: str, campaign_id: str | None = None):
             raise HTTPException(status_code=502, detail="Failed to place outbound call")
     finally:
         db.close()
+
+
+# =====================================================================
+# Voice API endpoints (STT, LLM + TTS, Summary)
+# =====================================================================
+
+SUMMARY_PROMPT = """You are a medical call summarizer. Analyze the conversation below and return ONLY valid JSON with this exact structure:
+
+{
+  "painLevel": <number 1-10 or null if not mentioned>,
+  "symptoms": ["symptom1", "symptom2"],
+  "ptExercise": <true/false/null>,
+  "medications": "any medication updates or compliance notes",
+  "concerns": "what the patient asked about or was worried about",
+  "recommendation": "key advice given during the call",
+  "followUp": "any follow-up actions needed",
+  "summary": "2-3 sentence overall summary of the call"
+}
+
+Return ONLY the JSON object. No markdown, no explanation."""
+
+
+class VoiceChatRequest(BaseModel):
+    campaign_id: str
+    transcription: Optional[str] = None
+    history: list[dict[str, str]] = Field(default_factory=list)
+    trigger: Optional[str] = None
+
+
+class VoiceSummaryRequest(BaseModel):
+    history: list[dict[str, str]]
+
+
+@app.post("/voice/chat")
+async def voice_chat(payload: VoiceChatRequest):
+    """LLM + TTS: get AI text response and synthesized audio."""
+    if not OPENROUTER_API_KEY:
+        raise HTTPException(status_code=500, detail="OPENROUTER_API_KEY not configured")
+    if not SMALLEST_AI_API_KEY:
+        raise HTTPException(status_code=500, detail="SMALLEST_AI_API_KEY not configured")
+
+    campaign = store["campaigns"].get(payload.campaign_id)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+
+    if not payload.transcription and payload.trigger != "initial":
+        raise HTTPException(status_code=400, detail="No transcription provided")
+
+    system_prompt = _build_system_prompt(campaign)
+    past_messages = payload.history or []
+    turn_number = len([m for m in past_messages if m.get("role") == "user"]) + 1
+
+    messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
+    messages.extend(past_messages)
+
+    if payload.trigger == "initial":
+        messages.append({
+            "role": "system",
+            "content": "The patient has picked up the phone. Start the conversation with STEP 1 immediately.",
+        })
+    else:
+        messages.append({
+            "role": "user",
+            "content": payload.transcription or "",
+        })
+        messages.append({
+            "role": "system",
+            "content": f"This is turn {turn_number}. Continue the flow naturally.",
+        })
+
+    # 1. LLM call via OpenRouter
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        llm_res = await client.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": "http://localhost:3000",
+                "X-Title": "PulseCall",
+            },
+            json={
+                "model": VOICE_LLM_MODEL,
+                "max_tokens": 300,
+                "messages": messages,
+            },
+        )
+        if llm_res.status_code != 200:
+            logger.error("OpenRouter error: %s", llm_res.text)
+            raise HTTPException(status_code=llm_res.status_code, detail=llm_res.text)
+
+        reply = llm_res.json().get("choices", [{}])[0].get("message", {}).get("content", "")
+
+    # Detect ending via [END_CALL] marker or fallback regex
+    is_ending = "[END_CALL]" in reply
+    # Clean the marker from the reply text
+    clean_reply = reply.replace("[END_CALL]", "").strip()
+    if not is_ending:
+        ending_patterns = re.compile(r"\b(goodbye|good bye|bye|take care|have a (good|great|nice) (day|evening|night|one))\b", re.IGNORECASE)
+        is_ending = bool(ending_patterns.search(clean_reply))
+
+    # 2. TTS via Smallest.ai
+    voice_id = campaign.get("voice_id", "rachel")
+    audio_base64 = None
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            tts_res = await client.post(
+                "https://waves-api.smallest.ai/api/v1/lightning-v3.1/get_speech",
+                headers={
+                    "Authorization": f"Bearer {SMALLEST_AI_API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "text": clean_reply,
+                    "voice_id": voice_id,
+                    "sample_rate": 24000,
+                    "speed": 1,
+                    "output_format": "mp3",
+                },
+            )
+            if tts_res.status_code == 200:
+                audio_base64 = base64.b64encode(tts_res.content).decode("utf-8")
+            else:
+                logger.error("TTS error: %s", tts_res.text)
+    except Exception as e:
+        logger.error("TTS request failed: %s", e)
+
+    return {"reply": clean_reply, "audio": audio_base64, "isEnding": is_ending}
+
+
+@app.post("/voice/transcribe")
+async def voice_transcribe(request: Request):
+    """STT: convert audio to text via Smallest.ai."""
+    if not SMALLEST_AI_API_KEY:
+        raise HTTPException(status_code=500, detail="SMALLEST_AI_API_KEY not configured")
+
+    audio_buffer = await request.body()
+    content_type = request.headers.get("content-type", "audio/webm")
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        res = await client.post(
+            "https://waves-api.smallest.ai/api/v1/lightning/get_text?model=lightning&language=en",
+            headers={
+                "Authorization": f"Bearer {SMALLEST_AI_API_KEY}",
+                "Content-Type": content_type,
+            },
+            content=audio_buffer,
+        )
+        if res.status_code != 200:
+            raise HTTPException(status_code=res.status_code, detail=res.text)
+        return res.json()
+
+
+@app.post("/voice/summary")
+async def voice_summary(payload: VoiceSummaryRequest):
+    """Post-call summary extraction."""
+    if not OPENROUTER_API_KEY:
+        raise HTTPException(status_code=500, detail="OPENROUTER_API_KEY not configured")
+
+    if not payload.history:
+        raise HTTPException(status_code=400, detail="No conversation history provided")
+
+    conversation_text = "\n".join(
+        f"{'Patient' if msg['role'] == 'user' else 'AI'}: {msg['content']}"
+        for msg in payload.history
+    )
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        res = await client.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": "http://localhost:3000",
+                "X-Title": "PulseCall",
+            },
+            json={
+                "model": VOICE_LLM_MODEL,
+                "max_tokens": 500,
+                "messages": [
+                    {"role": "system", "content": SUMMARY_PROMPT},
+                    {"role": "user", "content": conversation_text},
+                ],
+            },
+        )
+        if res.status_code != 200:
+            raise HTTPException(status_code=res.status_code, detail=res.text)
+
+        raw = res.json().get("choices", [{}])[0].get("message", {}).get("content", "")
+
+    # Parse JSON from LLM response
+    clean_raw = raw.replace("```json", "").replace("```", "").strip()
+    json_match = re.search(r"\{[\s\S]*\}", clean_raw)
+    if not json_match:
+        raise HTTPException(status_code=500, detail="Failed to parse summary")
+
+    return json.loads(json_match.group())

@@ -73,6 +73,75 @@ npm run dev
 > DB is SQLite and auto-creates on first run. No migrations needed.
 > Backend API docs available at http://localhost:8000/docs.
 
+### 5. Test It
+
+Backend:
+
+Run
+```bash
+# activate virtual environment
+cd backend
+pip install pytest
+python -m pytest tests/ -v
+```
+
+Frontend:
+
+Run
+```bash
+# activate virtual environment
+cd frontend
+npm install --save-dev jest
+npm install --save-dev typescript ts-node
+npm test
+```
+
+Backend tested behaviors
+
+- backend/tests/test_main.py
+    - Campaign creation works with recipient list.
+    - Conversation creation initializes required fields.
+    - Sending a turn appends user/assistant history.
+    - Conversation-to-campaign mismatch returns 400.
+    - Ending a call marks conversation inactive and sets end timestamp.
+    - Conversation listing includes created conversations.
+- backend/tests/test_campaigns_and_calls.py
+    - Seed campaigns are returned from /campaigns.
+    - Full flow: create campaign -> create conversation -> send message -> end call.
+    - Escalation is created when keywords are detected on end-call processing.
+    - Escalation acknowledge endpoint updates status + acknowledgment timestamp.
+- backend/tests/test_users_outbound_and_history.py
+    - User create/list endpoints work.
+    - Manual outbound call endpoint success path (call_placed + smallest_call_id).
+    - Manual outbound failure path sets DB state to BUSY_RETRY.
+    - Call history endpoint returns DB-backed records for a user.
+- backend/tests/test_webhooks_and_analytics.py
+    - Post-call webhook busy status schedules retry.
+    - Post-call webhook escalation path triggers SMS hook + in-memory escalation entry.
+    - Post-call transcript-analysis path stores completion and escalates on detected flags.
+    - Analytics webhook returns already_processed for completed calls.
+- backend/tests/test_voice_endpoints.py
+    - /voice/chat initial success path (LLM + TTS mocked).
+    - /voice/chat requires transcription for non-initial turns.
+    - /voice/transcribe success path (STT mocked).
+    - /voice/summary parses JSON from model response.
+
+———
+
+Frontend tested behaviors
+
+- frontend/src/lib/api.test.ts
+    - listCampaigns sends proper GET request and parses response.
+    - createCampaign sends POST with body.
+    - listCalls/getCall normalize id -> call_id.
+    - Error path surfaces backend detail when response is non-OK.
+- frontend/src/components/SentimentBadge.test.tsx
+    - Correct label/score rendering for known sentiment score.
+    - Fallback to neutral for unknown score.
+- frontend/src/components/Sidebar.test.tsx
+    - Sidebar renders expected navigation links.
+    - Active route styling toggles based on mocked pathname.
+
 ---
 
 ## How It Works

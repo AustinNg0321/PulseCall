@@ -46,6 +46,13 @@ export default function Home() {
   const chatEndRef = useRef<HTMLDivElement | null>(null);
   const audioPlayerRef = useRef<HTMLAudioElement | null>(null);
 
+  // [NEW] Refs for dialing sound synthesis (Web Audio API)
+  const ringAudioCtxRef = useRef<AudioContext | null>(null);
+  const ringOscillatorsRef = useRef<OscillatorNode[]>([]);
+  
+  // [NEW] Ref to handle circular dependency between processAudio and startRecordingLoop
+  const startRecordingLoopRef = useRef<() => Promise<void>>(async () => {});
+
   // Keep callStateRef in sync
   useEffect(() => {
     callStateRef.current = callState;
@@ -76,6 +83,71 @@ export default function Home() {
     const s = (seconds % 60).toString().padStart(2, "0");
     return `${m}:${s}`;
   };
+
+  // --- [NEW] Synthesis Helper: Stop Ringing ---
+  const stopRinging = useCallback(() => {
+    // Stop all oscillators
+    ringOscillatorsRef.current.forEach((osc) => {
+      try { osc.stop(); } catch (e) {console.error("Oscillator stop error:", e);}
+    });
+    ringOscillatorsRef.current = [];
+    
+    // Close AudioContext
+    if (ringAudioCtxRef.current && ringAudioCtxRef.current.state !== "closed") {
+      ringAudioCtxRef.current.close();
+      ringAudioCtxRef.current = null;
+    }
+  }, []);
+
+  // --- [NEW] Synthesis Helper: Start Ringing (440Hz + 480Hz) ---
+  const startRinging = useCallback(() => {
+    stopRinging(); // Ensure clean start
+
+    // Create AudioContext (Standard or Webkit for Safari)
+    const AudioContextClass = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+    const ctx = new AudioContextClass();
+    ringAudioCtxRef.current = ctx;
+
+    const gainNode = ctx.createGain();
+    const osc1 = ctx.createOscillator();
+    const osc2 = ctx.createOscillator();
+
+    // North American Audible Ringback Tone frequencies
+    osc1.frequency.value = 440;
+    osc2.frequency.value = 480;
+
+    osc1.connect(gainNode);
+    osc2.connect(gainNode);
+    gainNode.connect(ctx.destination);
+
+    const now = ctx.currentTime;
+    
+    // Ringing Pattern: 2s ON, 4s OFF
+    const playRing = (startTime: number) => {
+      // Fade in (avoid click)
+      gainNode.gain.setTargetAtTime(0.08, startTime, 0.05);
+      // Fade out at 2 seconds
+      gainNode.gain.setTargetAtTime(0, startTime + 2, 0.05);
+    };
+
+    // Initial ring
+    playRing(now);
+
+    // Schedule repeated rings every 6 seconds
+    const interval = setInterval(() => {
+      if (ringAudioCtxRef.current && ringAudioCtxRef.current.state !== "closed") {
+        playRing(ringAudioCtxRef.current.currentTime);
+      } else {
+        clearInterval(interval);
+      }
+    }, 6000);
+
+    osc1.start();
+    osc2.start();
+    ringOscillatorsRef.current = [osc1, osc2];
+
+    return interval;
+  }, [stopRinging]);
 
   // --- Silence detection using Web Audio API ---
   const startSilenceDetection = useCallback((stream: MediaStream, onSilence: () => void) => {
@@ -120,6 +192,38 @@ export default function Home() {
     };
   }, []);
 
+  // --- Play audio, then continue recording or end call ---
+  const playAudioAndContinue = useCallback((audioBase64: string, isEnding: boolean) => {
+    setStatus("speaking");
+    const audioBytes = Uint8Array.from(atob(audioBase64), (c) => c.charCodeAt(0));
+    const audioBlob = new Blob([audioBytes], { type: "audio/mp3" });
+    const audioUrl = URL.createObjectURL(audioBlob);
+    const audio = new Audio(audioUrl);
+
+    audioPlayerRef.current = audio;
+
+    audio.onended = () => {
+      URL.revokeObjectURL(audioUrl);
+
+      audioPlayerRef.current = null;
+
+      if (isEnding) {
+        setCallState("ended");
+        setStatus("idle");
+        if (messagesRef.current.length > 0) {
+          fetchCallSummary(messagesRef.current);
+        }
+      } else if (callStateRef.current === "connected") {
+        // Use ref to avoid circular dependency
+        startRecordingLoopRef.current();
+      } else {
+        setStatus("idle");
+      }
+    };
+    audio.play();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // Removed fetchCallSummary dependency to keep it simple as per original
+
   // --- Process recorded audio: STT → LLM → TTS ---
   const processAudio = useCallback(async (blob: Blob, mimeType: string) => {
     setStatus("transcribing");
@@ -135,7 +239,7 @@ export default function Home() {
         console.error("Transcription error:", sttData);
         // If transcription fails, auto-restart recording
         if (callStateRef.current === "connected") {
-          startRecordingLoop();
+          startRecordingLoopRef.current();
         }
         return;
       }
@@ -162,7 +266,7 @@ export default function Home() {
       if (!chatRes.ok) {
         console.error("Chat error:", chatData.error || chatData);
         if (callStateRef.current === "connected") {
-          startRecordingLoop();
+          startRecordingLoopRef.current();
         }
         return;
       }
@@ -181,47 +285,15 @@ export default function Home() {
         setCallState("ended");
         setStatus("idle");
       } else {
-        startRecordingLoop();
+        startRecordingLoopRef.current();
       }
     } catch (err) {
       console.error("Pipeline error:", err);
       if (callStateRef.current === "connected") {
-        startRecordingLoop();
+        startRecordingLoopRef.current();
       }
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // --- Play audio, then continue recording or end call ---
-  const playAudioAndContinue = useCallback((audioBase64: string, isEnding: boolean) => {
-    setStatus("speaking");
-    const audioBytes = Uint8Array.from(atob(audioBase64), (c) => c.charCodeAt(0));
-    const audioBlob = new Blob([audioBytes], { type: "audio/mp3" });
-    const audioUrl = URL.createObjectURL(audioBlob);
-    const audio = new Audio(audioUrl);
-
-    audioPlayerRef.current = audio;
-
-    audio.onended = () => {
-      URL.revokeObjectURL(audioUrl);
-
-      audioPlayerRef.current = null;
-
-      if (isEnding) {
-        setCallState("ended");
-        setStatus("idle");
-        if (messagesRef.current.length > 0) {
-          fetchCallSummary(messagesRef.current);
-        }
-      } else if (callStateRef.current === "connected") {
-        startRecordingLoop();
-      } else {
-        setStatus("idle");
-      }
-    };
-    audio.play();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [playAudioAndContinue]);
 
   // --- Auto-recording loop with silence detection ---
   const startRecordingLoop = useCallback(async () => {
@@ -274,10 +346,18 @@ export default function Home() {
     }
   }, [processAudio, startSilenceDetection]);
 
-  // --- Answer Call ---
+  // [NEW] Update ref so processAudio can call startRecordingLoop safely
+  useEffect(() => {
+    startRecordingLoopRef.current = startRecordingLoop;
+  }, [startRecordingLoop]);
+
+  // --- Answer Call (Modified for Ringing) ---
   const answerCall = useCallback(async () => {
     setCallState("connected");
     setStatus("thinking");
+
+    // [NEW] Start synthetic ringing
+    const ringInterval = startRinging();
 
     try {
       const res = await fetch("/api/chat", {
@@ -287,6 +367,11 @@ export default function Home() {
       });
 
       const data = await res.json();
+      
+      // [NEW] Stop ringing immediately when response arrives
+      clearInterval(ringInterval);
+      stopRinging();
+
       if (!res.ok) {
         console.error("Initial call error:", data);
         setStatus("idle");
@@ -305,10 +390,13 @@ export default function Home() {
         }
       }
     } catch (err) {
+      // [NEW] Stop ringing on error
+      clearInterval(ringInterval);
+      stopRinging();
       console.error("Error answering call:", err);
       setStatus("idle");
     }
-  }, [playAudioAndContinue, startRecordingLoop]);
+  }, [playAudioAndContinue, startRecordingLoop, startRinging, stopRinging]);
 
   // --- Fetch call summary from LLM ---
   const fetchCallSummary = useCallback(async (history: ChatMessage[]) => {
@@ -332,6 +420,8 @@ export default function Home() {
 
   // --- End call manually ---
   const endCall = useCallback(() => {
+    // [NEW] Stop ringing if call ended during connection
+    stopRinging();
 
     if (audioPlayerRef.current) {
       audioPlayerRef.current.pause();
@@ -357,7 +447,7 @@ export default function Home() {
     if (messagesRef.current.length > 0) {
       fetchCallSummary(messagesRef.current);
     }
-  }, [fetchCallSummary]);
+  }, [fetchCallSummary, stopRinging]);
 
   const isProcessing =
     status === "transcribing" || status === "thinking" || status === "speaking";

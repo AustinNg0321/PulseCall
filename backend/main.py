@@ -36,7 +36,7 @@ load_dotenv(dotenv_path=env_path)
 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 SMALLEST_AI_API_KEY = os.getenv("SMALLEST_AI_API_KEY", "")
-VOICE_LLM_MODEL = "meta-llama/llama-3.3-70b-instruct:free"
+VOICE_LLM_MODEL = "openai/gpt-4o-mini"  # openai/gpt-oss-20b:free
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -1112,28 +1112,22 @@ async def voice_chat(payload: VoiceChatRequest):
             "content": f"This is turn {turn_number}. Continue the flow naturally.",
         })
 
-    # 1. LLM call via OpenRouter
+    # 1. LLM call via OpenRouter (free → paid fallback)
+    or_headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "http://localhost:3000",
+        "X-Title": "PulseCall",
+    }
+    llm_payload = {
+        "model": VOICE_LLM_MODEL,
+        "max_tokens": 300,
+        "messages": messages,
+    }
+
     async with httpx.AsyncClient(timeout=30.0) as client:
-        llm_res = await client.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-                "Content-Type": "application/json",
-                "HTTP-Referer": "http://localhost:3000",
-                "X-Title": "PulseCall",
-            },
-            json={
-                "model": VOICE_LLM_MODEL,
-                "max_tokens": 300,
-                "messages": messages,
-            },
-        )
+        llm_res = await client.post("https://openrouter.ai/api/v1/chat/completions", headers=or_headers, json=llm_payload)
         if llm_res.status_code != 200:
-            if llm_res.status_code == 429:
-                logger.error(f"OpenRouter Rate Limit Exceeded for model {VOICE_LLM_MODEL}")
-                raise HTTPException(
-                    status_code=429, 
-                    detail=f"OpenRouter free model ({VOICE_LLM_MODEL}) rate limit exceeded. Please try again later or consider upgrading your OpenRouter plan.")
             logger.error("OpenRouter error: %s", llm_res.text)
             raise HTTPException(status_code=llm_res.status_code, detail=llm_res.text)
 
@@ -1213,24 +1207,23 @@ async def voice_summary(payload: VoiceSummaryRequest):
         for msg in payload.history
     )
 
+    or_headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json",
+        "HTTP-Referer": "http://localhost:3000",
+        "X-Title": "PulseCall",
+    }
+    summary_payload = {
+        "model": VOICE_LLM_MODEL,
+        "max_tokens": 500,
+        "messages": [
+            {"role": "system", "content": SUMMARY_PROMPT},
+            {"role": "user", "content": conversation_text},
+        ],
+    }
+
     async with httpx.AsyncClient(timeout=30.0) as client:
-        res = await client.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
-                "Content-Type": "application/json",
-                "HTTP-Referer": "http://localhost:3000",
-                "X-Title": "PulseCall",
-            },
-            json={
-                "model": VOICE_LLM_MODEL,
-                "max_tokens": 500,
-                "messages": [
-                    {"role": "system", "content": SUMMARY_PROMPT},
-                    {"role": "user", "content": conversation_text},
-                ],
-            },
-        )
+        res = await client.post("https://openrouter.ai/api/v1/chat/completions", headers=or_headers, json=summary_payload)
         if res.status_code != 200:
             raise HTTPException(status_code=res.status_code, detail=res.text)
 

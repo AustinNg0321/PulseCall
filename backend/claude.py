@@ -1,44 +1,55 @@
-from dotenv import load_dotenv
+import logging
 import os
-import httpx
 import json
 from pathlib import Path
+
+import httpx
+from dotenv import load_dotenv
 
 # Set .env file path based on current file location
 env_path = Path(__file__).parent / ".env"
 load_dotenv(dotenv_path=env_path)
 
-# Use OPENROUTER_API_KEY since that is what you have configured
+logger = logging.getLogger(__name__)
+
 API_KEY = os.getenv("OPENROUTER_API_KEY") or os.getenv("ANTHROPIC_API_KEY")
 
 if not API_KEY:
     raise ValueError("Neither OPENROUTER_API_KEY nor ANTHROPIC_API_KEY is set in .env file.")
 
-# OpenRouter model string for Claude 3.5 Haiku
-MODEL = "google/gemini-2.0-flash-exp:free"
+# OpenRouter models
+RESPONSE_MODEL = "openai/gpt-4o-mini" # openai/gpt-oss-20b:free
+ANALYSIS_MODEL = "anthropic/claude-3.5-sonnet" # meta-llama/llama-3.3-70b-instruct:free
+
 BASE_URL = "https://openrouter.ai/api/v1/chat/completions"
 
+HEADERS = {
+    "Authorization": f"Bearer {API_KEY}",
+    "Content-Type": "application/json",
+    "HTTP-Referer": "http://localhost:3000",
+    "X-Title": "PulseCall",
+}
+
+
+def _call_openrouter(payload: dict) -> dict:
+    """Call OpenRouter API."""
+    with httpx.Client(timeout=30.0) as client:
+        response = client.post(BASE_URL, headers=HEADERS, json=payload)
+        response.raise_for_status()
+        return response.json()
+
+
 def respond(user_message: str, history: list, system_prompt: str) -> str:
-    # OpenRouter uses OpenAI format: system prompt goes inside the messages list
     messages = [{"role": "system", "content": system_prompt}] + history
-    
-    headers = {
-        "Authorization": f"Bearer {API_KEY}",
-        "Content-Type": "application/json",
-        "HTTP-Referer": "http://localhost:3000", # Optional, for OpenRouter rankings
-        "X-Title": "PulseCall",
-    }
-    
+
     payload = {
-        "model": MODEL,
+        "model": RESPONSE_MODEL,
         "messages": messages,
         "max_tokens": 150,
     }
 
-    with httpx.Client(timeout=30.0) as client:
-        response = client.post(BASE_URL, headers=headers, json=payload)
-        response.raise_for_status()
-        return response.json()["choices"][0]["message"]["content"]
+    result = _call_openrouter(payload)
+    return result["choices"][0]["message"]["content"]
 
 
 PROCESS_CALL_TOOL = {
@@ -84,7 +95,6 @@ def process_transcript(transcript: list[dict[str, str]], escalation_keywords: li
     )
     keywords_str = ", ".join(escalation_keywords) if escalation_keywords else "none specified"
 
-    # Simplified tool-like behavior for OpenRouter/OpenAI format
     prompt = (
         f"Process this call transcript. The escalation keywords to watch for are: {keywords_str}\n\n"
         f"Transcript:\n{formatted}\n\n"
@@ -92,26 +102,19 @@ def process_transcript(transcript: list[dict[str, str]], escalation_keywords: li
         f"{json.dumps(PROCESS_CALL_TOOL['input_schema'])}"
     )
 
-    headers = {
-        "Authorization": f"Bearer {API_KEY}",
-        "Content-Type": "application/json",
-    }
-    
     payload = {
-        "model": MODEL,
+        "model": ANALYSIS_MODEL,
         "messages": [{"role": "user", "content": prompt}],
         "response_format": {"type": "json_object"},
         "max_tokens": 1024,
     }
 
     try:
-        with httpx.Client(timeout=30.0) as client:
-            response = client.post(BASE_URL, headers=headers, json=payload)
-            response.raise_for_status()
-            content = response.json()["choices"][0]["message"]["content"]
-            return json.loads(content)
+        result = _call_openrouter(payload)
+        content = result["choices"][0]["message"]["content"]
+        return json.loads(content)
     except Exception as e:
-        print(f"Error processing transcript: {e}")
+        logger.error("Error processing transcript: %s", e)
         return {
             "summary": "Unable to process transcript.",
             "sentiment_score": 3,

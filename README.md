@@ -6,72 +6,72 @@ Built at the **AI Agents Waterloo Voice Hackathon 2026**.
 
 ---
 
-## Quick Start
+## Requirements
 
-### 1. Clone & Install
+- Python 3.10+ → [python.org/downloads](https://www.python.org/downloads/)
+- Node.js 18+ → [nodejs.org](https://nodejs.org/)
+
+---
+
+## Setup & Run
+
+**1. Clone and install everything:**
 
 ```bash
 git clone https://github.com/AustinNg0321/PulseCall.git
 cd PulseCall
-```
 
-**Backend:**
-```bash
+# Backend
 cd backend
-python -m venv venv
-source venv/bin/activate      # Windows: venv\Scripts\activate
-pip install -r requirements.txt
-```
+python -m venv venv && source venv/bin/activate && pip install -r requirements.txt
+# Windows: python -m venv venv && venv\Scripts\activate && pip install -r requirements.txt
 
-**Frontend:**
-```bash
-cd frontend
+# Frontend
+cd ../frontend
 npm install
 ```
 
-### 2. Set Up API Keys
-
-Copy the example and fill in your keys:
+**2. Add your API keys:**
 
 ```bash
-cp backend/.env.example backend/.env
+cd ../backend
+cp .env.example .env
 ```
 
-Then edit `backend/.env`:
+Edit `backend/.env` — these two keys are **required**:
 
 ```env
-OPENROUTER_API_KEY=sk-or-v1-your-key-here
-SMALLEST_AI_API_KEY=your-key-here
+OPENROUTER_API_KEY=sk-or-v1-your-key-here    # Get from https://openrouter.ai (free tier)
+SMALLEST_AI_API_KEY=your-key-here             # Get from https://smallest.ai
 ```
 
-| Key | Where to get it | Used for |
-|-----|-----------------|----------|
-| `OPENROUTER_API_KEY` | [openrouter.ai](https://openrouter.ai) | LLM (Llama 3.3 70B — free tier) |
-| `SMALLEST_AI_API_KEY` | [smallest.ai](https://smallest.ai) | STT (Speech-to-Text) + TTS (Text-to-Speech) |
+**3. (Optional) Enable SMS escalation via Twilio:**
 
-### 3. Run
+Add these to `backend/.env` if you want real SMS alerts. Without them, escalations still show on the dashboard — they just won't send a text.
+
+```env
+TWILIO_ACCOUNT_SID=your-sid          # https://twilio.com/console
+TWILIO_AUTH_TOKEN=your-token
+TWILIO_FROM_NUMBER=+1234567890       # Your Twilio phone number
+ESCALATION_TO_NUMBER=+1234567890     # Where to send alerts
+```
+
+**4. Start the app (two terminals):**
 
 ```bash
-# Terminal 1 — Backend
-cd backend
-source venv/bin/activate
+# Terminal 1 — Backend on :8000
+cd backend && source venv/bin/activate
 uvicorn main:app --reload --port 8000
 
-# Terminal 2 — Frontend
+# Terminal 2 — Frontend on :3000
 cd frontend
 npm run dev
 ```
 
-Open **http://localhost:3000** in your browser.
+**5. Open http://localhost:3000** — 3 demo patient campaigns are pre-loaded. Click **Simulate Call** on any one, grant mic access, and start talking.
 
-### 4. Try It
-
-1. Dashboard loads with 3 pre-seeded patient campaigns
-2. Click **"Simulate Call"** on any campaign
-3. Review the patient profile, then click **"Start AI Check-in"**
-4. Grant microphone access → speak naturally → AI responds with voice
-5. End the call → view the Medical Summary
-6. Check the dashboard for call records and escalations
+> DB is SQLite and auto-creates on first run. No migrations needed.
+> Backend API docs available at http://localhost:8000/docs.
 
 ---
 

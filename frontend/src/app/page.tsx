@@ -375,97 +375,97 @@ export default function Home() {
     const p = patientProfile;
 
     return (
-      <div className="flex min-h-screen flex-col items-center bg-zinc-950 py-8 text-white">
+      <div className="flex min-h-screen flex-col items-center bg-[#050505] py-8 text-white selection:bg-blue-500/30">
         <div className="flex flex-col gap-5 max-w-md w-full px-4">
 
           {/* Header */}
           <div className="flex items-center justify-between mt-4">
             <div>
-              <h1 className="text-2xl font-bold">PulseCall</h1>
-              <p className="text-zinc-500 text-sm">AI Post-Op Check-in</p>
+              <h1 className="text-2xl font-bold tracking-tight bg-gradient-to-r from-white to-zinc-500 bg-clip-text text-transparent">PulseCall</h1>
+              <p className="text-zinc-500 text-xs font-medium uppercase tracking-widest">AI Post-Op Assistant</p>
             </div>
-            <div className="h-10 w-10 rounded-full bg-zinc-800 border border-zinc-700 flex items-center justify-center text-lg">
+            <div className="h-10 w-10 rounded-full bg-zinc-900 border border-white/10 flex items-center justify-center text-lg shadow-inner">
               👨‍⚕️
             </div>
           </div>
 
           {/* Patient Info Card */}
-          <div className="rounded-2xl bg-zinc-900 border border-zinc-800 p-5 flex flex-col gap-3">
+          <div className="rounded-3xl bg-gradient-to-b from-zinc-900/50 to-zinc-900 border border-white/10 p-6 flex flex-col gap-4 backdrop-blur-xl shadow-2xl">
             <div className="flex items-center gap-4">
-              <div className="h-14 w-14 rounded-full bg-blue-500/10 border border-blue-500/20 flex items-center justify-center text-2xl shrink-0">
+              <div className="h-16 w-16 rounded-2xl bg-blue-500/10 border border-blue-500/20 flex items-center justify-center text-3xl shrink-0 shadow-lg">
                 🧑
               </div>
               <div className="flex-1 min-w-0">
-                <h2 className="text-lg font-semibold">{p.name}</h2>
-                <p className="text-zinc-400 text-sm">{p.age}M &middot; {p.id}</p>
+                <h2 className="text-xl font-bold text-white tracking-tight">{p.name}</h2>
+                <p className="text-zinc-500 text-sm font-medium">{p.age}M • Patient ID: {p.id}</p>
               </div>
             </div>
-            <div className="flex flex-col gap-1.5 mt-1">
-              <div className="flex items-center gap-2 text-sm">
-                <span className="text-zinc-500">Surgery</span>
-                <span className="text-zinc-300">{p.surgicalHistory[0].procedure}</span>
+            <div className="grid grid-cols-2 gap-y-3 gap-x-4 pt-2 border-t border-white/5">
+              <div className="flex flex-col">
+                <span className="text-[10px] text-zinc-500 uppercase font-bold tracking-wider">Surgery</span>
+                <span className="text-sm text-zinc-200 font-medium truncate">{p.surgicalHistory[0].procedure}</span>
               </div>
-              <div className="flex items-center gap-2 text-sm">
-                <span className="text-zinc-500">Date</span>
-                <span className="text-zinc-300">{p.surgicalHistory[0].date}</span>
+              <div className="flex flex-col">
+                <span className="text-[10px] text-zinc-500 uppercase font-bold tracking-wider">Date</span>
+                <span className="text-sm text-zinc-200 font-medium">{p.surgicalHistory[0].date}</span>
               </div>
-              <div className="flex items-center gap-2 text-sm">
-                <span className="text-zinc-500">Doctor</span>
-                <span className="text-zinc-300">{p.surgicalHistory[0].surgeon}</span>
+              <div className="flex flex-col">
+                <span className="text-[10px] text-zinc-500 uppercase font-bold tracking-wider">Surgeon</span>
+                <span className="text-sm text-zinc-200 font-medium">{p.surgicalHistory[0].surgeon}</span>
               </div>
-              <div className="flex items-center gap-2 text-sm">
-                <span className="text-zinc-500">Next Appt</span>
-                <span className="text-zinc-300">{p.nextAppointment}</span>
+              <div className="flex flex-col">
+                <span className="text-[10px] text-zinc-500 uppercase font-bold tracking-wider">Next Appt</span>
+                <span className="text-sm text-blue-400 font-semibold">{p.nextAppointment}</span>
               </div>
             </div>
           </div>
 
           {/* Quick Stats */}
           <div className="grid grid-cols-2 gap-3">
-            <div className="rounded-xl bg-zinc-900 border border-zinc-800 p-4 flex flex-col gap-1">
-              <span className="text-xs text-zinc-500 uppercase tracking-wide">Pain Trend</span>
+            <div className="rounded-2xl bg-zinc-900/50 border border-white/5 p-4 flex flex-col gap-2">
+              <span className="text-[10px] text-zinc-500 uppercase font-bold tracking-wider">Pain Trend</span>
               <div className="flex items-center gap-1.5 text-xl font-bold">
                 {p.previousCalls.map((c, i) => (
                   <span key={i} className="flex items-center gap-1.5">
-                    <span className={c.painLevel <= 3 ? "text-green-400" : c.painLevel <= 6 ? "text-yellow-400" : "text-red-400"}>
+                    <span className={c.painLevel <= 3 ? "text-emerald-400" : c.painLevel <= 6 ? "text-amber-400" : "text-rose-400"}>
                       {c.painLevel}
                     </span>
                     {i < p.previousCalls.length - 1 && (
-                      <svg className="w-3 h-3 text-zinc-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <svg className="w-2.5 h-2.5 text-zinc-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
                       </svg>
                     )}
                   </span>
                 ))}
-                <svg className="w-3 h-3 text-zinc-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <svg className="w-2.5 h-2.5 text-zinc-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
                 </svg>
-                <span className="text-zinc-600">?</span>
+                <span className="text-zinc-700">?</span>
               </div>
             </div>
-            <div className="rounded-xl bg-zinc-900 border border-zinc-800 p-4 flex flex-col gap-1">
-              <span className="text-xs text-zinc-500 uppercase tracking-wide">PT Exercise</span>
-              <span className="text-xl font-bold text-green-400">Active</span>
-              <span className="text-xs text-zinc-500">Since Feb 8</span>
+            <div className="rounded-2xl bg-zinc-900/50 border border-white/5 p-4 flex flex-col gap-1">
+              <span className="text-[10px] text-zinc-500 uppercase font-bold tracking-wider">PT Exercise</span>
+              <span className="text-xl font-bold text-emerald-400">Active</span>
+              <span className="text-[10px] text-zinc-500 font-medium">Streak: 4 Days</span>
             </div>
           </div>
 
           {/* Call History */}
-          <div className="flex flex-col gap-2">
-            <h3 className="text-xs text-zinc-500 uppercase tracking-wider font-semibold px-1">Call History</h3>
+          <div className="flex flex-col gap-3">
+            <h3 className="text-[10px] text-zinc-500 uppercase tracking-[0.2em] font-bold px-1">Recent Check-ins</h3>
             {[...p.previousCalls].reverse().map((call, i) => (
-              <div key={i} className="rounded-xl bg-zinc-900 border border-zinc-800 p-4 flex items-center gap-3">
-                <div className={`h-10 w-10 rounded-full flex items-center justify-center shrink-0 ${
-                  call.painLevel <= 3 ? "bg-green-500/10 text-green-400" : call.painLevel <= 6 ? "bg-yellow-500/10 text-yellow-400" : "bg-red-500/10 text-red-400"
+              <div key={i} className="group rounded-2xl bg-zinc-900/30 border border-white/5 p-4 flex items-center gap-4 hover:bg-zinc-900/60 transition-all duration-300">
+                <div className={`h-12 w-12 rounded-xl flex items-center justify-center shrink-0 shadow-lg ${
+                  call.painLevel <= 3 ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20" : call.painLevel <= 6 ? "bg-amber-500/10 text-amber-400 border border-amber-500/20" : "bg-rose-500/10 text-rose-400 border border-rose-500/20"
                 }`}>
-                  <span className="text-sm font-bold">{call.painLevel}</span>
+                  <span className="text-base font-black">{call.painLevel}</span>
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center justify-between">
-                    <span className="text-sm font-medium text-zinc-200">{call.date}</span>
-                    <span className="text-xs text-zinc-600">Check-in #{p.previousCalls.length - i}</span>
+                    <span className="text-sm font-bold text-zinc-200">{call.date}</span>
+                    <span className="text-[10px] font-bold text-zinc-600 uppercase tracking-tighter">Log #{p.previousCalls.length - i}</span>
                   </div>
-                  <p className="text-xs text-zinc-400 mt-0.5 truncate">{call.summary}</p>
+                  <p className="text-xs text-zinc-500 mt-1 truncate font-medium">{call.summary}</p>
                 </div>
               </div>
             ))}
@@ -474,12 +474,16 @@ export default function Home() {
           {/* Call Now Button */}
           <button
             onClick={answerCall}
-            className="mt-2 mb-8 w-full py-4 rounded-2xl bg-green-500 text-white font-semibold text-lg hover:bg-green-600 transition duration-200 flex items-center justify-center gap-3 shadow-lg shadow-green-500/20"
+            className="mt-4 mb-8 w-full py-5 rounded-3xl bg-gradient-to-r from-blue-600 to-indigo-600 text-white font-bold text-lg hover:from-blue-500 hover:to-indigo-500 transition-all duration-300 flex items-center justify-center gap-3 shadow-[0_20px_50px_rgba(37,99,235,0.3)] active:scale-[0.98]"
           >
-            <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 24 24">
+            <div className="relative flex h-3 w-3">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-white opacity-75"></span>
+              <span className="relative inline-flex rounded-full h-3 w-3 bg-white"></span>
+            </div>
+            <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
               <path d="M20.01 15.38c-1.23 0-2.42-.2-3.53-.56-.35-.12-.74-.03-1.01.24l-1.57 1.97c-2.83-1.44-5.15-3.75-6.59-6.59l1.97-1.57c.26-.27.36-.66.25-1.01-.37-1.11-.56-2.3-.56-3.53 0-.54-.45-.99-.99-.99H4.19C3.65 3.3 3 3.24 3 3.99 3 13.28 10.73 21 20.01 21c.71 0 .72-.63.72-1.19v-3.44c0-.54-.45-.99-.99-.99z" />
             </svg>
-            Start Check-in Call
+            Start AI Check-in
           </button>
         </div>
       </div>
@@ -489,10 +493,10 @@ export default function Home() {
   // --- UI: Call Ended Screen ---
   if (callState === "ended") {
     return (
-      <div className="flex min-h-screen flex-col items-center bg-zinc-950 py-8 text-white">
+      <div className="flex min-h-screen flex-col items-center bg-[#050505] py-8 text-white">
         <div className="flex flex-col items-center gap-6 max-w-md w-full px-4">
 
-          <div className="flex flex-col items-center gap-2 mt-8">
+          <div className="flex flex-col items-center gap-2 mt-12">
             <div className="h-20 w-20 rounded-full bg-zinc-800 flex items-center justify-center text-4xl border-2 border-zinc-700">
               👨‍⚕️
             </div>
@@ -502,14 +506,14 @@ export default function Home() {
 
           {/* Call Summary Card */}
           {summaryLoading ? (
-            <div className="w-full rounded-2xl bg-zinc-900 border border-zinc-800 p-6 flex flex-col items-center gap-3">
+            <div className="w-full rounded-3xl bg-zinc-900/50 border border-white/10 p-10 flex flex-col items-center gap-4 backdrop-blur-xl">
               <div className="h-8 w-8 rounded-full border-3 border-zinc-600 border-t-blue-400 animate-spin" />
-              <p className="text-zinc-400 text-sm">Generating call summary...</p>
+              <p className="text-zinc-400 text-sm font-medium animate-pulse">Analyzing conversation...</p>
             </div>
           ) : callSummary ? (
-            <div className="w-full rounded-2xl bg-zinc-900 border border-zinc-800 p-5 flex flex-col gap-4">
-              <h2 className="text-sm font-semibold text-zinc-500 uppercase tracking-wider">Call Summary</h2>
-              <p className="text-zinc-200 text-sm leading-relaxed">{callSummary.summary}</p>
+            <div className="w-full rounded-3xl bg-zinc-900/50 border border-white/10 p-6 flex flex-col gap-6 backdrop-blur-xl shadow-2xl">
+              <h2 className="text-[10px] font-black text-zinc-500 uppercase tracking-[0.2em]">Medical Summary</h2>
+              <p className="text-zinc-100 text-base leading-relaxed font-medium">{callSummary.summary}</p>
 
               <div className="grid grid-cols-2 gap-3">
                 {/* Pain Level */}
@@ -611,7 +615,7 @@ export default function Home() {
               setCallSummary(null);
               setCallState("home");
             }}
-            className="mt-4 mb-8 px-8 py-3 rounded-full bg-zinc-700 text-white font-semibold hover:bg-zinc-600 transition duration-200 flex items-center gap-2"
+            className="mt-4 mb-8 px-8 py-4 rounded-2xl bg-zinc-900 border border-white/10 text-white font-bold hover:bg-zinc-800 transition-all duration-300 flex items-center gap-3 shadow-lg"
           >
             <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" />
@@ -625,7 +629,7 @@ export default function Home() {
 
   // --- UI: Connected Call Screen ---
   return (
-    <div className="flex min-h-screen flex-col items-center bg-zinc-950 py-8 text-white">
+    <div className="flex min-h-screen flex-col items-center bg-[#050505] py-8 text-white overflow-hidden">
       <div className="flex flex-col items-center gap-4 max-w-md w-full px-4 h-full">
 
         {/* Header */}
@@ -635,32 +639,34 @@ export default function Home() {
         </div>
 
         {/* Status Indicator */}
-        <div className="flex flex-col items-center justify-center min-h-[200px]">
+        <div className="flex flex-col items-center justify-center min-h-[300px] relative">
+          {/* Background Glow */}
+          <div className={`absolute h-64 w-64 rounded-full blur-[100px] transition-all duration-1000 opacity-20 ${
+            status === "recording" ? "bg-emerald-500" : status === "speaking" ? "bg-blue-500" : "bg-zinc-500"
+          }`} />
+          
           <div
-            className={`flex h-40 w-40 items-center justify-center rounded-full transition-all duration-300 shadow-2xl border-4 ${
+            className={`relative flex h-48 w-48 items-center justify-center rounded-full transition-all duration-500 shadow-2xl border-[6px] ${
               status === "recording"
-                ? "bg-green-500 border-green-300 shadow-[0_0_30px_rgba(34,197,94,0.5)]"
+                ? "bg-emerald-500 border-emerald-300/50 shadow-[0_0_60px_rgba(16,185,129,0.4)] scale-110"
                 : status === "speaking"
-                  ? "bg-blue-500 border-blue-400 shadow-[0_0_30px_rgba(59,130,246,0.6)]"
+                  ? "bg-blue-600 border-blue-400/50 shadow-[0_0_60px_rgba(37,99,235,0.4)] scale-110"
                   : isProcessing
-                    ? "bg-zinc-700 border-zinc-600"
-                    : "bg-zinc-800 border-zinc-700"
+                    ? "bg-zinc-800 border-zinc-700 animate-pulse"
+                    : "bg-zinc-900 border-zinc-800"
             }`}
           >
             {status === "recording" ? (
-              // Mic listening animation
-              <div className="flex gap-1.5 items-center h-12">
-                <div className="w-1.5 bg-white rounded-full animate-[pulse_0.8s_ease-in-out_infinite] h-6"></div>
-                <div className="w-1.5 bg-white rounded-full animate-[pulse_1s_ease-in-out_infinite] h-10"></div>
-                <div className="w-1.5 bg-white rounded-full animate-[pulse_0.6s_ease-in-out_infinite] h-8"></div>
-                <div className="w-1.5 bg-white rounded-full animate-[pulse_1.1s_ease-in-out_infinite] h-5"></div>
-                <div className="w-1.5 bg-white rounded-full animate-[pulse_0.9s_ease-in-out_infinite] h-9"></div>
+              <div className="flex gap-2 items-center h-16">
+                {[0.8, 1.1, 0.6, 1.3, 0.9].map((d, i) => (
+                  <div key={i} className="w-2 bg-white rounded-full animate-bounce" style={{ height: `${30 + Math.random() * 40}%`, animationDuration: `${d}s` }}></div>
+                ))}
               </div>
             ) : status === "speaking" ? (
-              <div className="flex gap-2 items-center h-12">
-                <div className="w-2 bg-white rounded-full animate-[pulse_1s_ease-in-out_infinite] h-8"></div>
-                <div className="w-2 bg-white rounded-full animate-[pulse_1.2s_ease-in-out_infinite] h-14"></div>
-                <div className="w-2 bg-white rounded-full animate-[pulse_0.8s_ease-in-out_infinite] h-6"></div>
+              <div className="flex gap-3 items-center h-16">
+                {[1.2, 0.8, 1.5].map((d, i) => (
+                  <div key={i} className="w-3 bg-white rounded-full animate-pulse" style={{ height: `${40 + Math.random() * 50}%`, animationDuration: `${d}s` }}></div>
+                ))}
               </div>
             ) : isProcessing ? (
               <div className="h-12 w-12 rounded-full border-4 border-zinc-400 border-t-white animate-spin" />
@@ -671,19 +677,19 @@ export default function Home() {
               </svg>
             )}
           </div>
-          <p className="mt-6 text-zinc-300 font-medium text-lg">{statusText[status]}</p>
+          <p className="mt-10 text-white font-bold text-xl tracking-tight">{statusText[status]}</p>
         </div>
 
         {/* Chat History */}
         {messages.length > 0 && (
-          <div className="w-full flex flex-col gap-2 max-h-[250px] overflow-y-auto px-1">
+          <div className="w-full flex flex-col gap-3 max-h-[200px] overflow-y-auto px-2 py-4 mask-fade-out">
             {messages.map((msg, i) => (
               <div
                 key={i}
-                className={`rounded-lg px-3 py-2 max-w-[85%] ${
+                className={`rounded-2xl px-4 py-2.5 max-w-[85%] text-sm font-medium shadow-sm transition-all duration-300 ${
                   msg.role === "user"
-                    ? "self-end bg-blue-600/20 text-blue-100"
-                    : "self-start bg-zinc-800 text-zinc-100"
+                    ? "self-end bg-blue-600/20 text-blue-100 border border-blue-500/20"
+                    : "self-start bg-zinc-900/80 text-zinc-100 border border-white/5 backdrop-blur-md"
                 }`}
               >
                 <p className="text-sm leading-relaxed">{msg.content}</p>
@@ -696,10 +702,10 @@ export default function Home() {
         {/* End Call Button */}
         <button
           onClick={endCall}
-          className="mb-8 mt-auto h-16 w-16 rounded-full bg-red-500 text-white flex items-center justify-center hover:bg-red-600 transition duration-200 shadow-lg"
+          className="mb-12 mt-auto h-20 w-20 rounded-full bg-rose-500 text-white flex items-center justify-center hover:bg-rose-600 hover:scale-110 active:scale-95 transition-all duration-300 shadow-[0_0_40px_rgba(244,63,94,0.3)]"
           title="End Call"
         >
-          <svg className="w-8 h-8" fill="currentColor" viewBox="0 0 24 24"><path d="M12 9c-1.6 0-3.15.25-4.6.72v3.1c0 .39-.23.74-.56.9-.98.49-1.87 1.12-2.66 1.85-.18.18-.43.28-.7.28-.28 0-.53-.11-.71-.29L.29 13.08c-.18-.17-.29-.42-.29-.7 0-.28.11-.53.29-.71C3.34 8.36 7.46 6.5 12 6.5s8.66 1.86 11.71 5.17c.18.18.29.43.29.71 0 .28-.11.53-.29.71l-2.48 2.48c-.18.18-.43.29-.71.29-.27 0-.52-.11-.7-.28-.79-.74-1.69-1.36-2.67-1.85-.33-.16-.56-.5-.56-.9v-3.1C15.15 9.25 13.6 9 12 9z"/></svg>
+          <svg className="w-10 h-10" fill="currentColor" viewBox="0 0 24 24"><path d="M12 9c-1.6 0-3.15.25-4.6.72v3.1c0 .39-.23.74-.56.9-.98.49-1.87 1.12-2.66 1.85-.18.18-.43.28-.7.28-.28 0-.53-.11-.71-.29L.29 13.08c-.18-.17-.29-.42-.29-.7 0-.28.11-.53.29-.71C3.34 8.36 7.46 6.5 12 6.5s8.66 1.86 11.71 5.17c.18.18.29.43.29.71 0 .28-.11.53-.29.71l-2.48 2.48c-.18.18-.43.29-.71.29-.27 0-.52-.11-.7-.28-.79-.74-1.69-1.36-2.67-1.85-.33-.16-.56-.5-.56-.9v-3.1C15.15 9.25 13.6 9 12 9z"/></svg>
         </button>
       </div>
     </div>

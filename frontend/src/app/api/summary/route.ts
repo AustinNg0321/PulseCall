@@ -67,8 +67,12 @@ export async function POST(req: NextRequest) {
     const data = await res.json();
     const raw = data.choices?.[0]?.message?.content || "";
 
+    // Clean up potential markdown code blocks (```json ... ```)
+    const cleanRaw = raw.replace(/^```json\s*/, "").replace(/\s*```$/, "");
+
     // Parse JSON from LLM response
-    const jsonMatch = raw.match(/\{[\s\S]*\}/);
+    const jsonMatch = cleanRaw.match(/\{[\s\S]*\}/);
+
     if (!jsonMatch) {
       return NextResponse.json(
         { error: "Failed to parse summary", raw },

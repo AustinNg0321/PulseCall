@@ -42,7 +42,7 @@ When the call ends, a separate analysis model (Claude 3.5 Sonnet via OpenRouter)
 
 ---
 
-## 💡 Evaluation Note: Model Configuration
+## 💡 Model Configuration
 This project defaults to `GPT-4o-mini` and `Claude 3.5 Sonnet`. If you prefer to evaluate using **free models** via OpenRouter:
 * **Voice LLM:** Change the model ID in `backend/main.py` (see comments for free options).
 * **Analysis LLM:** Change the `analysis_model` in `backend/claude.py`.

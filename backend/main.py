@@ -1129,6 +1129,11 @@ async def voice_chat(payload: VoiceChatRequest):
             },
         )
         if llm_res.status_code != 200:
+            if llm_res.status_code == 429:
+                logger.error("OpenRouter Rate Limit Exceeded")
+                raise HTTPException(
+                    status_code=429, 
+                    detail="OpenRouter 무료 모델 사용량이 초과되었습니다. 잠시 후 다시 시도하거나 크레딧을 충전하세요.")
             logger.error("OpenRouter error: %s", llm_res.text)
             raise HTTPException(status_code=llm_res.status_code, detail=llm_res.text)
 
